@@ -1,0 +1,44 @@
+{
+    "name": "appwrite/protocol-proxy",
+    "description": "High-performance protocol-agnostic proxy with Swoole for HTTP, TCP, and SMTP",
+    "type": "library",
+    "license": "BSD-3-Clause",
+    "authors": [
+        {
+            "name": "Appwrite Team",
+            "email": "team@appwrite.io"
+        }
+    ],
+    "require": {
+        "php": ">=8.2",
+        "ext-swoole": ">=5.0",
+        "ext-redis": "*",
+        "utopia-php/database": "4.*",
+    },
+    "require-dev": {
+        "phpunit/phpunit": "^10.0",
+        "phpstan/phpstan": "^1.10",
+        "laravel/pint": "^1.13"
+    },
+    "autoload": {
+        "psr-4": {
+            "Appwrite\\ProtocolProxy\\": "src/"
+        }
+    },
+    "autoload-dev": {
+        "psr-4": {
+            "Tests\\": "tests/"
+        }
+    },
+    "scripts": {
+        "test": "phpunit",
+        "lint": "pint",
+        "analyse": "phpstan analyse"
+    },
+    "config": {
+        "optimize-autoloader": true,
+        "sort-packages": true
+    },
+    "minimum-stability": "stable",
+    "prefer-stable": true
+}
