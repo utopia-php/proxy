@@ -2,7 +2,10 @@
 
 require __DIR__ . '/../vendor/autoload.php';
 
-use Utopia\Proxy\Smtp\SMTP;
+use Utopia\Platform\Action;
+use Utopia\Proxy\Adapter\SMTP\Swoole as SMTPAdapter;
+use Utopia\Proxy\Server\SMTP\Swoole as SMTPServer;
+use Utopia\Proxy\Service\SMTP as SMTPService;
 
 /**
  * SMTP Proxy Server Example
@@ -32,8 +35,11 @@ $config = [
     'workers' => swoole_cpu_num() * 2,
 
     // Performance tuning
-    'max_connections' => 50000,
-    'max_coroutine' => 50000,
+    'max_connections' => 100000,
+    'max_coroutine' => 100000,
+    'socket_buffer_size' => 8 * 1024 * 1024, // 8MB
+    'buffer_output_size' => 8 * 1024 * 1024, // 8MB
+    'log_level' => SWOOLE_LOG_ERROR,
 
     // Cold-start settings
     'cold_start_timeout' => 30000,
@@ -61,11 +67,25 @@ echo "Workers: {$config['workers']}\n";
 echo "Max connections: {$config['max_connections']}\n";
 echo "\n";
 
-$server = new SMTP(
+$backendEndpoint = getenv('SMTP_BACKEND_ENDPOINT') ?: 'smtp-backend:1025';
+
+$adapter = new SMTPAdapter();
+$service = $adapter->getService() ?? new SMTPService();
+
+$service->addAction('resolve', (new class extends Action {})
+    ->callback(function (string $domain) use ($backendEndpoint): string {
+        return $backendEndpoint;
+    }));
+
+$adapter->setService($service);
+
+$server = new SMTPServer(
     host: $config['host'],
     port: $config['port'],
     workers: $config['workers'],
-    config: $config
+    config: array_merge($config, [
+        'adapter' => $adapter,
+    ])
 );
 
 $server->start();

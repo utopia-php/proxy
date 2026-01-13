@@ -2,7 +2,10 @@
 
 require __DIR__ . '/../vendor/autoload.php';
 
-use Utopia\Proxy\Http\HTTP;
+use Utopia\Platform\Action;
+use Utopia\Proxy\Adapter\HTTP\Swoole as HTTPAdapter;
+use Utopia\Proxy\Server\HTTP\Swoole as HTTPServer;
+use Utopia\Proxy\Service\HTTP as HTTPService;
 
 /**
  * HTTP Proxy Server Example
@@ -25,6 +28,12 @@ $config = [
     // Performance tuning
     'max_connections' => 100_000,
     'max_coroutine' => 100_000,
+    'socket_buffer_size' => 8 * 1024 * 1024, // 8MB
+    'buffer_output_size' => 8 * 1024 * 1024, // 8MB
+    'log_level' => SWOOLE_LOG_ERROR,
+    'backend_pool_size' => 2048,
+    'backend_pool_timeout' => 0.001,
+    'telemetry_headers' => false,
 
     // Cold-start settings
     'cold_start_timeout' => 30_000, // 30 seconds
@@ -52,11 +61,25 @@ echo "Workers: {$config['workers']}\n";
 echo "Max connections: {$config['max_connections']}\n";
 echo "\n";
 
-$server = new HTTP(
+$backendEndpoint = getenv('HTTP_BACKEND_ENDPOINT') ?: 'http-backend:5678';
+
+$adapter = new HTTPAdapter();
+$service = $adapter->getService() ?? new HTTPService();
+
+$service->addAction('resolve', (new class extends Action {})
+    ->callback(function (string $hostname) use ($backendEndpoint): string {
+        return $backendEndpoint;
+    }));
+
+$adapter->setService($service);
+
+$server = new HTTPServer(
     host: $config['host'],
     port: $config['port'],
     workers: $config['workers'],
-    config: $config
+    config: array_merge($config, [
+        'adapter' => $adapter,
+    ])
 );
 
 $server->start();

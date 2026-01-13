@@ -2,7 +2,6 @@
 .gitignore
 .idea
 vendor
-composer.lock
 *.md
 .dockerignore
 Dockerfile

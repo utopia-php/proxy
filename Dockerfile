@@ -6,6 +6,7 @@ RUN apk add --no-cache \
     make \
     linux-headers \
     libstdc++ \
+    brotli-dev \
     libzip-dev \
     openssl-dev
 
@@ -14,17 +15,23 @@ RUN docker-php-ext-install \
     sockets \
     zip
 
-RUN pecl install swoole-6.0.1 && \
+RUN pecl channel-update pecl.php.net && \
+    pecl install swoole-6.0.1 && \
     docker-php-ext-enable swoole
 
-RUN pecl install redis && \
+RUN pecl channel-update pecl.php.net && \
+    pecl install redis && \
     docker-php-ext-enable redis
 
 WORKDIR /app
 
 COPY composer.json composer.lock ./
 COPY --from=composer:latest /usr/bin/composer /usr/bin/composer
-RUN composer install --no-dev --optimize-autoloader
+RUN composer install --no-dev --optimize-autoloader \
+    --ignore-platform-req=ext-mongodb \
+    --ignore-platform-req=ext-memcached \
+    --ignore-platform-req=ext-opentelemetry \
+    --ignore-platform-req=ext-protobuf
 
 COPY . .
 

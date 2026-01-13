@@ -4,6 +4,7 @@ namespace Utopia\Proxy\Server\TCP;
 
 use Utopia\Proxy\Adapter\TCP\Swoole as TCPAdapter;
 use Swoole\Coroutine;
+use Swoole\Coroutine\Client;
 use Swoole\Server;
 
 /**
@@ -16,6 +17,14 @@ class Swoole
     protected array $adapters = [];
     protected array $config;
     protected array $ports;
+    /** @var array<int, bool> */
+    protected array $forwarding = [];
+    /** @var array<int, Client> */
+    protected array $backendClients = [];
+    /** @var array<int, string> */
+    protected array $clientDatabaseIds = [];
+    /** @var array<int, int> */
+    protected array $clientPorts = [];
 
     public function __construct(
         string $host = '0.0.0.0',
@@ -27,12 +36,22 @@ class Swoole
         $this->config = array_merge([
             'host' => $host,
             'workers' => $workers,
-            'max_connections' => 100000,
-            'max_coroutine' => 100000,
-            'socket_buffer_size' => 8 * 1024 * 1024, // 8MB for database traffic
-            'buffer_output_size' => 8 * 1024 * 1024,
+            'max_connections' => 200000,
+            'max_coroutine' => 200000,
+            'socket_buffer_size' => 16 * 1024 * 1024, // 16MB for database traffic
+            'buffer_output_size' => 16 * 1024 * 1024,
+            'reactor_num' => swoole_cpu_num() * 2,
+            'dispatch_mode' => 2,
+            'enable_reuse_port' => true,
+            'backlog' => 65535,
+            'package_max_length' => 32 * 1024 * 1024, // 32MB max query/result
+            'tcp_keepidle' => 30,
+            'tcp_keepinterval' => 10,
+            'tcp_keepcount' => 3,
             'enable_coroutine' => true,
             'max_wait_time' => 60,
+            'log_level' => SWOOLE_LOG_ERROR,
+            'log_connections' => false,
         ], $config);
 
         // Create main server on first port
@@ -50,12 +69,17 @@ class Swoole
     {
         $this->server->set([
             'worker_num' => $this->config['workers'],
+            'reactor_num' => $this->config['reactor_num'],
             'max_connection' => $this->config['max_connections'],
             'max_coroutine' => $this->config['max_coroutine'],
             'socket_buffer_size' => $this->config['socket_buffer_size'],
             'buffer_output_size' => $this->config['buffer_output_size'],
             'enable_coroutine' => $this->config['enable_coroutine'],
             'max_wait_time' => $this->config['max_wait_time'],
+            'log_level' => $this->config['log_level'],
+            'dispatch_mode' => $this->config['dispatch_mode'],
+            'enable_reuse_port' => $this->config['enable_reuse_port'],
+            'backlog' => $this->config['backlog'],
 
             // TCP performance tuning
             'open_tcp_nodelay' => true,
@@ -63,13 +87,13 @@ class Swoole
             'open_cpu_affinity' => true,
             'tcp_defer_accept' => 5,
             'open_tcp_keepalive' => true,
-            'tcp_keepidle' => 4,
-            'tcp_keepinterval' => 5,
-            'tcp_keepcount' => 5,
+            'tcp_keepidle' => $this->config['tcp_keepidle'],
+            'tcp_keepinterval' => $this->config['tcp_keepinterval'],
+            'tcp_keepcount' => $this->config['tcp_keepcount'],
 
             // Package settings for database protocols
             'open_length_check' => false, // Let database handle framing
-            'package_max_length' => 8 * 1024 * 1024, // 8MB max query
+            'package_max_length' => $this->config['package_max_length'],
 
             // Enable stats
             'task_enable_coroutine' => true,
@@ -112,8 +136,11 @@ class Swoole
     {
         $info = $server->getClientInfo($fd);
         $port = $info['server_port'] ?? 0;
+        $this->clientPorts[$fd] = $port;
 
-        echo "Client #{$fd} connected to port {$port}\n";
+        if (!empty($this->config['log_connections'])) {
+            echo "Client #{$fd} connected to port {$port}\n";
+        }
     }
 
     /**
@@ -126,27 +153,32 @@ class Swoole
         $startTime = microtime(true);
 
         try {
-            $info = $server->getClientInfo($fd);
-            $port = $info['server_port'] ?? 0;
+            $port = $this->clientPorts[$fd] ?? ($server->getClientInfo($fd)['server_port'] ?? 0);
 
             $adapter = $this->adapters[$port] ?? null;
             if (!$adapter) {
                 throw new \Exception("No adapter for port {$port}");
             }
 
-            // Parse database ID from initial packet (SNI or first query)
-            $databaseId = $adapter->parseDatabaseId($data, $fd);
+            $backendClient = $this->backendClients[$fd] ?? null;
+            if (!$backendClient) {
+                // Parse database ID from initial packet (SNI or first query)
+                $databaseId = $this->clientDatabaseIds[$fd]
+                    ?? $adapter->parseDatabaseId($data, $fd);
+                $this->clientDatabaseIds[$fd] = $databaseId;
 
-            // Get or create backend connection
-            $backendFd = $adapter->getBackendConnection($databaseId, $fd);
+                // Get or create backend connection
+                $backendClient = $adapter->getBackendConnection($databaseId, $fd);
+                $this->backendClients[$fd] = $backendClient;
+            }
 
             // Forward data to backend using zero-copy where possible
-            $this->forwardToBackend($server, $fd, $backendFd, $data);
+            $this->forwardToBackend($backendClient, $data);
 
             // Start bidirectional forwarding in coroutine
-            if (!isset($server->connections[$fd]['forwarding'])) {
-                $server->connections[$fd]['forwarding'] = true;
-                $this->startForwarding($server, $fd, $backendFd);
+            if (!isset($this->forwarding[$fd])) {
+                $this->forwarding[$fd] = true;
+                $this->startForwarding($server, $fd, $backendClient);
             }
 
         } catch (\Exception $e) {
@@ -160,25 +192,12 @@ class Swoole
      *
      * Performance: 10GB/s+ throughput
      */
-    protected function startForwarding(Server $server, int $clientFd, int $backendFd): void
+    protected function startForwarding(Server $server, int $clientFd, Client $backendClient): void
     {
-        Coroutine::create(function () use ($server, $clientFd, $backendFd) {
-            // Forward client -> backend
-            while ($server->exist($clientFd) && $server->exist($backendFd)) {
-                $data = $server->recv($clientFd, 65536, 0.1);
-
-                if ($data === false || $data === '') {
-                    break;
-                }
-
-                $server->send($backendFd, $data);
-            }
-        });
-
-        Coroutine::create(function () use ($server, $clientFd, $backendFd) {
+        Coroutine::create(function () use ($server, $clientFd, $backendClient) {
             // Forward backend -> client
-            while ($server->exist($clientFd) && $server->exist($backendFd)) {
-                $data = $server->recv($backendFd, 65536, 0.1);
+            while ($server->exist($clientFd) && $backendClient->isConnected()) {
+                $data = $backendClient->recv(65536);
 
                 if ($data === false || $data === '') {
                     break;
@@ -189,19 +208,24 @@ class Swoole
         });
     }
 
-    protected function forwardToBackend(Server $server, int $clientFd, int $backendFd, string $data): void
+    protected function forwardToBackend(Client $backendClient, string $data): void
     {
-        $server->send($backendFd, $data);
+        $backendClient->send($data);
     }
 
     public function onClose(Server $server, int $fd, int $reactorId): void
     {
-        echo "Client #{$fd} disconnected\n";
-
-        // Close backend connection if exists
-        if (isset($server->connections[$fd]['backend_fd'])) {
-            $server->close($server->connections[$fd]['backend_fd']);
+        if (!empty($this->config['log_connections'])) {
+            echo "Client #{$fd} disconnected\n";
         }
+
+        if (isset($this->backendClients[$fd])) {
+            $this->backendClients[$fd]->close();
+            unset($this->backendClients[$fd]);
+        }
+        unset($this->forwarding[$fd]);
+        unset($this->clientDatabaseIds[$fd]);
+        unset($this->clientPorts[$fd]);
     }
 
     public function start(): void

@@ -2,7 +2,10 @@
 
 require __DIR__ . '/../vendor/autoload.php';
 
-use Utopia\Proxy\Tcp\TCP;
+use Utopia\Platform\Action;
+use Utopia\Proxy\Adapter\TCP\Swoole as TCPAdapter;
+use Utopia\Proxy\Server\TCP\Swoole as TCPServer;
+use Utopia\Proxy\Service\TCP as TCPService;
 
 /**
  * TCP Proxy Server Example (PostgreSQL + MySQL)
@@ -25,12 +28,22 @@ $config = [
     'workers' => swoole_cpu_num() * 2,
 
     // Performance tuning
-    'max_connections' => 100000,
-    'max_coroutine' => 100000,
-    'socket_buffer_size' => 8 * 1024 * 1024, // 8MB for database traffic
+    'max_connections' => 200_000,
+    'max_coroutine' => 200_000,
+    'socket_buffer_size' => 16 * 1024 * 1024, // 16MB for database traffic
+    'buffer_output_size' => 16 * 1024 * 1024, // 16MB
+    'log_level' => SWOOLE_LOG_ERROR,
+    'reactor_num' => swoole_cpu_num() * 2,
+    'dispatch_mode' => 2,
+    'enable_reuse_port' => true,
+    'backlog' => 65535,
+    'package_max_length' => 32 * 1024 * 1024, // 32MB max query/result
+    'tcp_keepidle' => 30,
+    'tcp_keepinterval' => 10,
+    'tcp_keepcount' => 3,
 
     // Cold-start settings
-    'cold_start_timeout' => 30000,
+    'cold_start_timeout' => 30_000,
     'health_check_interval' => 100,
 
     // Backend services
@@ -49,7 +62,12 @@ $config = [
     'redis_port' => (int)(getenv('REDIS_PORT') ?: 6379),
 ];
 
-$ports = [5432, 3306]; // PostgreSQL, MySQL
+$postgresPort = (int)(getenv('TCP_POSTGRES_PORT') ?: 5432);
+$mysqlPort = (int)(getenv('TCP_MYSQL_PORT') ?: 3306);
+$ports = array_values(array_filter([$postgresPort, $mysqlPort], static fn (int $port): bool => $port > 0)); // PostgreSQL, MySQL
+if ($ports === []) {
+    $ports = [5432, 3306];
+}
 
 echo "Starting TCP Proxy Server...\n";
 echo "Host: {$config['host']}\n";
@@ -58,11 +76,29 @@ echo "Workers: {$config['workers']}\n";
 echo "Max connections: {$config['max_connections']}\n";
 echo "\n";
 
-$server = new TCP(
+$backendEndpoint = getenv('TCP_BACKEND_ENDPOINT') ?: 'tcp-backend:15432';
+
+$adapterFactory = function (int $port) use ($backendEndpoint): TCPAdapter {
+    $adapter = new TCPAdapter(port: $port);
+    $service = $adapter->getService() ?? new TCPService();
+
+    $service->addAction('resolve', (new class extends Action {})
+        ->callback(function (string $databaseId) use ($backendEndpoint): string {
+            return $backendEndpoint;
+        }));
+
+    $adapter->setService($service);
+
+    return $adapter;
+};
+
+$server = new TCPServer(
     host: $config['host'],
     ports: $ports,
     workers: $config['workers'],
-    config: $config
+    config: array_merge($config, [
+        'adapter_factory' => $adapterFactory,
+    ])
 );
 
 $server->start();

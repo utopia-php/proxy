@@ -2,7 +2,9 @@
 
 namespace Utopia\Proxy\Adapter\HTTP;
 
+use Utopia\Platform\Service;
 use Utopia\Proxy\Adapter;
+use Utopia\Proxy\Service\HTTP as HTTPService;
 
 /**
  * HTTP Protocol Adapter (Swoole Implementation)
@@ -11,7 +13,7 @@ use Utopia\Proxy\Adapter;
  *
  * Routing:
  * - Input: Hostname (e.g., func-abc123.appwrite.network)
- * - Resolution: Provided by application via resolve hook
+ * - Resolution: Provided by application via resolve action
  * - Output: Backend endpoint (IP:port)
  *
  * Performance:
@@ -22,12 +24,20 @@ use Utopia\Proxy\Adapter;
  *
  * Example:
  * ```php
+ * $service = new \Utopia\Proxy\Service\HTTP();
+ * $service->addAction('resolve', (new class extends \Utopia\Platform\Action {})
+ *     ->callback(fn($hostname) => $myBackend->resolve($hostname)));
  * $adapter = new HTTP();
- * $adapter->hook('resolve', fn($hostname) => $myBackend->resolve($hostname));
+ * $adapter->setService($service);
  * ```
  */
 class Swoole extends Adapter
 {
+    protected function defaultService(): ?Service
+    {
+        return new HTTPService();
+    }
+
     /**
      * Get adapter name
      *

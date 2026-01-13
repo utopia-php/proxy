@@ -48,17 +48,23 @@ The protocol-proxy uses the **Adapter Pattern** - similar to [utopia-php/databas
 <?php
 require 'vendor/autoload.php';
 
-use Utopia\Proxy\Adapter\HTTP;
+use Utopia\Platform\Action;
+use Utopia\Proxy\Adapter\HTTP\Swoole as HTTPAdapter;
+use Utopia\Proxy\Server\HTTP\Swoole as HTTPServer;
+use Utopia\Proxy\Service\HTTP as HTTPService;
 
-$adapter = new HTTP($cache, $dbPool);
+$adapter = new HTTPAdapter();
+$service = $adapter->getService() ?? new HTTPService();
 
 // Required: Provide backend resolution logic
-$adapter->hook('resolve', function (string $hostname) {
-    // Your resolution logic here (database, K8s, config, etc.)
-    return $backend->getEndpoint($hostname);
-});
+$service->addAction('resolve', (new class extends Action {})
+    ->callback(function (string $hostname) use ($backend): string {
+        return $backend->getEndpoint($hostname);
+    }));
 
-$server = new HttpServer(
+$adapter->setService($service);
+
+$server = new HTTPServer(
     host: '0.0.0.0',
     port: 80,
     workers: swoole_cpu_num() * 2,
@@ -74,9 +80,9 @@ $server->start();
 <?php
 require 'vendor/autoload.php';
 
-use Utopia\Proxy\Tcp\TcpServer;
+use Utopia\Proxy\Server\TCP\Swoole as TCPServer;
 
-$server = new TcpServer(
+$server = new TCPServer(
     host: '0.0.0.0',
     ports: [5432, 3306], // PostgreSQL, MySQL
     workers: swoole_cpu_num() * 2
@@ -91,9 +97,9 @@ $server->start();
 <?php
 require 'vendor/autoload.php';
 
-use Utopia\Proxy\Smtp\SmtpServer;
+use Utopia\Proxy\Server\SMTP\Swoole as SMTPServer;
 
-$server = new SmtpServer(
+$server = new SMTPServer(
     host: '0.0.0.0',
     port: 25,
     workers: swoole_cpu_num() * 2
@@ -120,7 +126,7 @@ $config = [
     // Routing cache
     'cache_ttl' => 1, // 1 second
 
-    // Database connection (for cache and resolution hooks)
+    // Database connection (for cache and resolution actions)
     'db_host' => 'localhost',
     'db_port' => 3306,
     'db_user' => 'appwrite',
@@ -131,6 +137,24 @@ $config = [
     'redis_host' => '127.0.0.1',
     'redis_port' => 6379,
 ];
+```
+
+## ✅ Testing
+
+```bash
+composer test
+```
+
+Integration tests (Docker Compose):
+
+```bash
+composer test:integration
+```
+
+Coverage (requires Xdebug or PCOV):
+
+```bash
+vendor/bin/phpunit --coverage-text
 ```
 
 ## 🎨 Architecture

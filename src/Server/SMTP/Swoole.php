@@ -1,19 +1,22 @@
 <?php
 
-namespace Utopia\Proxy\Smtp;
+namespace Utopia\Proxy\Server\SMTP;
 
-use Utopia\Proxy\Adapter\SMTP as SMTPAdapter;
+use Utopia\Proxy\Adapter\SMTP\Swoole as SMTPAdapter;
 use Swoole\Coroutine;
+use Swoole\Coroutine\Client;
 use Swoole\Server;
 
 /**
  * High-performance SMTP proxy server
  */
-class SMTP
+class Swoole
 {
     protected Server $server;
     protected SMTPAdapter $adapter;
     protected array $config;
+    /** @var array<int, array{state: string, domain: ?string, backend: ?Client}> */
+    protected array $connections = [];
 
     public function __construct(
         string $host = '0.0.0.0',
@@ -52,7 +55,6 @@ class SMTP
             'open_tcp_nodelay' => true,
             'tcp_fastopen' => true,
             'open_cpu_affinity' => true,
-            'tcp_defer_accept' => 5,
 
             // SMTP-specific settings
             'open_length_check' => false, // SMTP uses CRLF line endings
@@ -100,10 +102,10 @@ class SMTP
         $server->send($fd, "220 appwrite.io ESMTP Proxy\r\n");
 
         // Initialize connection state
-        $server->connections[$fd] = [
+        $this->connections[$fd] = [
             'state' => 'greeting',
             'domain' => null,
-            'backend_fd' => null,
+            'backend' => null,
         ];
     }
 
@@ -115,7 +117,15 @@ class SMTP
     public function onReceive(Server $server, int $fd, int $reactorId, string $data): void
     {
         try {
-            $conn = &$server->connections[$fd];
+            if (!isset($this->connections[$fd])) {
+                $this->connections[$fd] = [
+                    'state' => 'greeting',
+                    'domain' => null,
+                    'backend' => null,
+                ];
+            }
+
+            $conn = &$this->connections[$fd];
 
             // Parse SMTP command
             $command = strtoupper(substr(trim($data), 0, 4));
@@ -160,8 +170,8 @@ class SMTP
             $result = $this->adapter->route($domain);
 
             // Connect to backend SMTP server
-            $backendFd = $this->connectToBackend($result->endpoint, 25);
-            $conn['backend_fd'] = $backendFd;
+            $backendClient = $this->connectToBackend($result->endpoint, 25);
+            $conn['backend'] = $backendClient;
 
             // Forward EHLO to backend and relay response
             $this->forwardToBackend($server, $fd, $data, $conn);
@@ -176,18 +186,18 @@ class SMTP
      */
     protected function forwardToBackend(Server $server, int $fd, string $data, array &$conn): void
     {
-        if (!isset($conn['backend_fd'])) {
+        if (!isset($conn['backend']) || !$conn['backend'] instanceof Client) {
             throw new \Exception('No backend connection');
         }
 
-        $backendFd = $conn['backend_fd'];
+        $backendClient = $conn['backend'];
 
         // Send to backend
-        $server->send($backendFd, $data);
+        $backendClient->send($data);
 
         // Relay response back to client (in coroutine)
-        Coroutine::create(function () use ($server, $fd, $backendFd) {
-            $response = $server->recv($backendFd, 8192, 5);
+        Coroutine::create(function () use ($server, $fd, $backendClient) {
+            $response = $backendClient->recv(8192);
 
             if ($response !== false && $response !== '') {
                 $server->send($fd, $response);
@@ -198,21 +208,25 @@ class SMTP
     /**
      * Connect to backend SMTP server
      */
-    protected function connectToBackend(string $endpoint, int $port): int
+    protected function connectToBackend(string $endpoint, int $port): Client
     {
         [$host, $port] = explode(':', $endpoint . ':' . $port);
         $port = (int)$port;
 
-        $client = new \Swoole\Coroutine\Client(SWOOLE_SOCK_TCP);
+        $client = new Client(SWOOLE_SOCK_TCP);
 
         if (!$client->connect($host, $port, 30)) {
             throw new \Exception("Failed to connect to backend SMTP: {$host}:{$port}");
         }
 
-        // Read backend greeting
-        $greeting = $client->recv(8192, 5);
+        $client->set([
+            'timeout' => 5,
+        ]);
 
-        return $client->sock;
+        // Read backend greeting
+        $client->recv(8192);
+
+        return $client;
     }
 
     public function onClose(Server $server, int $fd, int $reactorId): void
@@ -220,9 +234,11 @@ class SMTP
         echo "Client #{$fd} disconnected\n";
 
         // Close backend connection if exists
-        if (isset($server->connections[$fd]['backend_fd'])) {
-            $server->close($server->connections[$fd]['backend_fd']);
+        if (isset($this->connections[$fd]['backend']) && $this->connections[$fd]['backend'] instanceof Client) {
+            $this->connections[$fd]['backend']->close();
         }
+
+        unset($this->connections[$fd]);
     }
 
     public function start(): void

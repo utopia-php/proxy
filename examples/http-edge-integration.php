@@ -4,7 +4,7 @@
  * Example: Integrating Appwrite Edge with Protocol Proxy
  *
  * This example shows how Appwrite Edge can use the protocol-proxy
- * with custom hooks to inject business logic like:
+ * with custom actions to inject business logic like:
  * - Rule caching and resolution
  * - JWT authentication
  * - Runtime resolution
@@ -16,16 +16,20 @@
 
 require __DIR__ . '/../vendor/autoload.php';
 
-use Utopia\Proxy\Adapter\HTTP;
-use Utopia\Proxy\Server\HTTP as HTTPServer;
+use Utopia\Platform\Action;
+use Utopia\Proxy\Adapter\HTTP\Swoole as HTTPAdapter;
+use Utopia\Proxy\Service\HTTP as HTTPService;
+use Utopia\Proxy\Server\HTTP\Swoole as HTTPServer;
 
 // Create HTTP adapter
-$adapter = new HTTP();
+$adapter = new HTTPAdapter();
+$service = $adapter->getService() ?? new HTTPService();
 
-// Hook: Resolve backend endpoint (REQUIRED)
+// Action: Resolve backend endpoint (REQUIRED)
 // This is where Appwrite Edge provides the backend resolution logic
-$adapter->hook('resolve', function (string $hostname): string {
-    echo "[Hook] Resolving backend for: {$hostname}\n";
+$service->addAction('resolve', (new class extends Action {})
+    ->callback(function (string $hostname): string {
+    echo "[Action] Resolving backend for: {$hostname}\n";
 
     // Example resolution strategies:
 
@@ -54,41 +58,49 @@ $adapter->hook('resolve', function (string $hostname): string {
     // return $endpoint;
 
     throw new \Exception("No backend found for hostname: {$hostname}");
-});
+}));
 
-// Hook 1: Before routing - Validate domain and extract project/deployment info
-$adapter->hook('beforeRoute', function (string $hostname) {
-    echo "[Hook] Before routing for: {$hostname}\n";
+// Action 1: Before routing - Validate domain and extract project/deployment info
+$service->addAction('beforeRoute', (new class extends Action {})
+    ->setType(Action::TYPE_INIT)
+    ->callback(function (string $hostname) {
+    echo "[Action] Before routing for: {$hostname}\n";
 
     // Example: Edge could validate domain format here
     if (!preg_match('/^[a-z0-9-]+\.appwrite\.network$/', $hostname)) {
         throw new \Exception("Invalid hostname format: {$hostname}");
     }
-});
+}));
 
-// Hook 2: After routing - Log successful routes and cache rule data
-$adapter->hook('afterRoute', function (string $hostname, string $endpoint, $result) {
-    echo "[Hook] Routed {$hostname} -> {$endpoint}\n";
-    echo "[Hook] Cache: " . ($result->metadata['cached'] ? 'HIT' : 'MISS') . "\n";
-    echo "[Hook] Latency: {$result->metadata['latency_ms']}ms\n";
+// Action 2: After routing - Log successful routes and cache rule data
+$service->addAction('afterRoute', (new class extends Action {})
+    ->setType(Action::TYPE_SHUTDOWN)
+    ->callback(function (string $hostname, string $endpoint, $result) {
+    echo "[Action] Routed {$hostname} -> {$endpoint}\n";
+    echo "[Action] Cache: " . ($result->metadata['cached'] ? 'HIT' : 'MISS') . "\n";
+    echo "[Action] Latency: {$result->metadata['latency_ms']}ms\n";
 
     // Example: Edge could:
     // - Log to telemetry
     // - Update metrics
     // - Cache rule/runtime data
     // - Add custom headers to response
-});
+}));
 
-// Hook 3: On routing error - Log errors and provide custom error handling
-$adapter->hook('onRoutingError', function (string $hostname, \Exception $e) {
-    echo "[Hook] Routing error for {$hostname}: {$e->getMessage()}\n";
+// Action 3: On routing error - Log errors and provide custom error handling
+$service->addAction('onRoutingError', (new class extends Action {})
+    ->setType(Action::TYPE_ERROR)
+    ->callback(function (string $hostname, \Exception $e) {
+    echo "[Action] Routing error for {$hostname}: {$e->getMessage()}\n";
 
     // Example: Edge could:
     // - Log to Sentry
     // - Return custom error pages
     // - Trigger alerts
     // - Fallback to different region
-});
+}));
+
+$adapter->setService($service);
 
 // Create server with custom adapter
 $server = new HTTPServer(
@@ -104,7 +116,7 @@ $server = new HTTPServer(
 echo "Edge-integrated HTTP Proxy Server\n";
 echo "==================================\n";
 echo "Listening on: http://0.0.0.0:8080\n";
-echo "\nHooks registered:\n";
+echo "\nActions registered:\n";
 echo "- resolve: K8s service discovery\n";
 echo "- beforeRoute: Domain validation\n";
 echo "- afterRoute: Logging and telemetry\n";

@@ -2,7 +2,9 @@
 
 namespace Utopia\Proxy\Adapter\TCP;
 
+use Utopia\Platform\Service;
 use Utopia\Proxy\Adapter;
+use Utopia\Proxy\Service\TCP as TCPService;
 use Swoole\Coroutine\Client;
 
 /**
@@ -12,7 +14,7 @@ use Swoole\Coroutine\Client;
  *
  * Routing:
  * - Input: Database hostname extracted from SNI or startup message
- * - Resolution: Provided by application via resolve hook
+ * - Resolution: Provided by application via resolve action
  * - Output: Backend endpoint (IP:port)
  *
  * Performance:
@@ -24,11 +26,20 @@ use Swoole\Coroutine\Client;
  * Example:
  * ```php
  * $adapter = new TCP(port: 5432);
- * $adapter->hook('resolve', fn($hostname) => $myBackend->resolve($hostname));
+ * $service = new \Utopia\Proxy\Service\TCP();
+ * $service->addAction('resolve', (new class extends \Utopia\Platform\Action {})
+ *     ->callback(fn($hostname) => $myBackend->resolve($hostname)));
+ * $adapter->setService($service);
  * ```
  */
 class Swoole extends Adapter
 {
+    protected function defaultService(): ?Service
+    {
+        return new TCPService();
+    }
+
+    /** @var array<string, Client> */
     protected array $backendConnections = [];
 
     public function __construct(
@@ -152,10 +163,10 @@ class Swoole extends Adapter
      *
      * @param string $databaseId
      * @param int $clientFd
-     * @return int
+     * @return Client
      * @throws \Exception
      */
-    public function getBackendConnection(string $databaseId, int $clientFd): int
+    public function getBackendConnection(string $databaseId, int $clientFd): Client
     {
         // Check if we already have a connection for this database
         $cacheKey = "backend:connection:{$databaseId}:{$clientFd}";
@@ -177,11 +188,9 @@ class Swoole extends Adapter
             throw new \Exception("Failed to connect to backend: {$host}:{$port}");
         }
 
-        // Store backend file descriptor
-        $backendFd = $client->sock;
-        $this->backendConnections[$cacheKey] = $backendFd;
+        $this->backendConnections[$cacheKey] = $client;
 
-        return $backendFd;
+        return $client;
     }
 
     /**
@@ -196,6 +205,7 @@ class Swoole extends Adapter
         $cacheKey = "backend:connection:{$databaseId}:{$clientFd}";
 
         if (isset($this->backendConnections[$cacheKey])) {
+            $this->backendConnections[$cacheKey]->close();
             unset($this->backendConnections[$cacheKey]);
         }
     }

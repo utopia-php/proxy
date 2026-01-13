@@ -147,6 +147,12 @@ ab -n 100000 -c 1000 http://localhost:8080/
 # wrk
 wrk -t12 -c1000 -d30s http://localhost:8080/
 
+# wrk script (env configurable)
+benchmarks/wrk.sh
+
+# wrk2 script (env configurable)
+benchmarks/wrk2.sh
+
 # Custom benchmark
 php benchmarks/http.php
 ```

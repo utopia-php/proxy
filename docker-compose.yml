@@ -1,5 +1,3 @@
-version: '3.8'
-
 services:
 
   mariadb:
@@ -12,7 +10,7 @@ services:
       MYSQL_USER: appwrite
       MYSQL_PASSWORD: password
     ports:
-      - "3306:3306"
+      - "${MARIADB_PORT:-3306}:3306"
     volumes:
       - mariadb_data:/var/lib/mysql
     networks:
@@ -28,7 +26,7 @@ services:
     container_name: protocol-proxy-redis
     restart: unless-stopped
     ports:
-      - "6379:6379"
+      - "${REDIS_PORT:-6379}:6379"
     volumes:
       - redis_data:/data
     networks:
@@ -44,7 +42,7 @@ services:
     container_name: protocol-proxy-http
     restart: unless-stopped
     ports:
-      - "8080:8080"
+      - "${HTTP_PROXY_PORT:-8080}:8080"
     environment:
       DB_HOST: mariadb
       DB_PORT: 3306
@@ -69,7 +67,8 @@ services:
     container_name: protocol-proxy-tcp
     restart: unless-stopped
     ports:
-      - "8081:8081"
+      - "${TCP_POSTGRES_PORT:-5432}:5432"
+      - "${TCP_MYSQL_PORT:-3306}:3306"
     environment:
       DB_HOST: mariadb
       DB_PORT: 3306
@@ -92,7 +91,7 @@ services:
     container_name: protocol-proxy-smtp
     restart: unless-stopped
     ports:
-      - "8025:8025"
+      - "${SMTP_PROXY_PORT:-8025}:25"
     environment:
       DB_HOST: mariadb
       DB_PORT: 3306

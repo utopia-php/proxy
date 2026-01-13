@@ -3,6 +3,8 @@
 namespace Utopia\Proxy;
 
 use Swoole\Table;
+use Utopia\Platform\Action;
+use Utopia\Platform\Service;
 
 /**
  * Protocol Proxy Adapter
@@ -14,10 +16,10 @@ use Swoole\Table;
  * - Route incoming requests to backend endpoints
  * - Cache routing decisions for performance (optional)
  * - Provide connection statistics
- * - Execute lifecycle hooks
+ * - Execute lifecycle actions
  *
  * Non-responsibilities (handled by application layer):
- * - Backend endpoint resolution (provided via resolve hook)
+ * - Backend endpoint resolution (provided via resolve action)
  * - Container cold-starts and lifecycle management
  * - Health checking and orchestration
  * - Business logic (authentication, authorization, etc.)
@@ -34,59 +36,45 @@ abstract class Adapter
         'routing_errors' => 0,
     ];
 
-    /** @var array<string, array<callable>> Registered hooks */
-    protected array $hooks = [
-        'resolve' => [],
-        'beforeRoute' => [],
-        'afterRoute' => [],
-        'onRoutingError' => [],
-    ];
+    protected ?Service $service = null;
 
-    public function __construct()
+    public function __construct(?Service $service = null)
     {
+        $this->service = $service ?? $this->defaultService();
         $this->initRoutingTable();
     }
 
     /**
-     * Register a hook callback
+     * Provide a default service for the adapter.
      *
-     * Available hooks:
-     * - resolve: Called to resolve backend endpoint, receives ($resourceId), returns string endpoint
-     * - beforeRoute: Called before routing logic, receives ($resourceId)
-     * - afterRoute: Called after routing, receives ($resourceId, $endpoint)
-     * - onRoutingError: Called on routing errors, receives ($resourceId, $exception)
+     * @return Service|null
+     */
+    protected function defaultService(): ?Service
+    {
+        return null;
+    }
+
+    /**
+     * Set action service
      *
-     * @param string $name Hook name
-     * @param callable $callback Callback function
+     * @param Service $service
      * @return $this
      */
-    public function hook(string $name, callable $callback): static
+    public function setService(Service $service): static
     {
-        if (!isset($this->hooks[$name])) {
-            throw new \InvalidArgumentException("Unknown hook: {$name}");
-        }
+        $this->service = $service;
 
-        // For resolve hook, only allow one callback
-        if ($name === 'resolve' && !empty($this->hooks['resolve'])) {
-            throw new \InvalidArgumentException("Only one resolve hook can be registered");
-        }
-
-        $this->hooks[$name][] = $callback;
         return $this;
     }
 
     /**
-     * Execute registered hooks
+     * Get action service
      *
-     * @param string $name Hook name
-     * @param mixed ...$args Arguments to pass to callbacks
-     * @return void
+     * @return Service|null
      */
-    protected function executeHooks(string $name, mixed ...$args): void
+    public function getService(): ?Service
     {
-        foreach ($this->hooks[$name] ?? [] as $callback) {
-            $callback(...$args);
-        }
+        return $this->service;
     }
 
     /**
@@ -113,8 +101,7 @@ abstract class Adapter
     /**
      * Get backend endpoint for a resource identifier
      *
-     * First tries the resolve hook if registered, otherwise falls back to
-     * the protocol-specific implementation.
+     * Uses the resolve action registered on the action service.
      *
      * @param string $resourceId Protocol-specific identifier (hostname, connection string, etc.)
      * @return string Backend endpoint (host:port or IP:port)
@@ -122,38 +109,14 @@ abstract class Adapter
      */
     protected function getBackendEndpoint(string $resourceId): string
     {
-        // If resolve hook is registered, use it
-        if (!empty($this->hooks['resolve'])) {
-            $resolver = $this->hooks['resolve'][0];
-            $endpoint = $resolver($resourceId);
+        $resolver = $this->getActionCallback($this->getResolveAction());
+        $endpoint = $resolver($resourceId);
 
-            if (empty($endpoint)) {
-                throw new \Exception("Resolve hook returned empty endpoint for: {$resourceId}");
-            }
-
-            return $endpoint;
+        if (empty($endpoint)) {
+            throw new \Exception("Resolve action returned empty endpoint for: {$resourceId}");
         }
 
-        // Otherwise use the default implementation (if provided by subclass)
-        return $this->resolveBackend($resourceId);
-    }
-
-    /**
-     * Default backend resolution (not implemented - hook required)
-     *
-     * Applications MUST register a resolve hook to provide backend endpoints.
-     * There is no default implementation.
-     *
-     * @param string $resourceId Protocol-specific identifier
-     * @return string Backend endpoint
-     * @throws \Exception Always - resolve hook is required
-     */
-    protected function resolveBackend(string $resourceId): string
-    {
-        throw new \Exception(
-            "No resolve hook registered. You must register a resolve hook to provide backend endpoints:\n" .
-            "\$adapter->hook('resolve', fn(\$resourceId) => \$backendEndpoint);"
-        );
+        return $endpoint;
     }
 
     /**
@@ -182,8 +145,8 @@ abstract class Adapter
     {
         $startTime = microtime(true);
 
-        // Execute beforeRoute hooks
-        $this->executeHooks('beforeRoute', $resourceId);
+        // Execute init actions (before route)
+        $this->executeActions(Action::TYPE_INIT, $resourceId);
 
         // Check routing cache first (O(1) lookup)
         $cached = $this->routingTable->get($resourceId);
@@ -200,8 +163,8 @@ abstract class Adapter
                 ]
             );
 
-            // Execute afterRoute hooks
-            $this->executeHooks('afterRoute', $resourceId, $cached['endpoint'], $result);
+            // Execute shutdown actions (after route)
+            $this->executeActions(Action::TYPE_SHUTDOWN, $resourceId, $cached['endpoint'], $result);
 
             return $result;
         }
@@ -229,17 +192,116 @@ abstract class Adapter
                 ]
             );
 
-            // Execute afterRoute hooks
-            $this->executeHooks('afterRoute', $resourceId, $endpoint, $result);
+            // Execute shutdown actions (after route)
+            $this->executeActions(Action::TYPE_SHUTDOWN, $resourceId, $endpoint, $result);
 
             return $result;
         } catch (\Exception $e) {
             $this->stats['routing_errors']++;
 
-            // Execute error hooks
-            $this->executeHooks('onRoutingError', $resourceId, $e);
+            // Execute error actions (on routing error)
+            $this->executeActions(Action::TYPE_ERROR, $resourceId, $e);
 
             throw $e;
+        }
+    }
+
+    /**
+     * Get the resolve action
+     *
+     * @return Action
+     * @throws \Exception
+     */
+    protected function getResolveAction(): Action
+    {
+        $service = $this->service;
+        if ($service === null) {
+            throw new \Exception(
+                "No action service registered. You must register a resolve action:\n" .
+                "\$service->addAction('resolve', (new class extends \\Utopia\\Platform\\Action {})\n" .
+                "    ->callback(fn(\$resourceId) => \$backendEndpoint));"
+            );
+        }
+
+        $action = $this->getServiceAction($service, 'resolve');
+        if ($action === null) {
+            throw new \Exception(
+                "No resolve action registered. You must register a resolve action:\n" .
+                "\$service->addAction('resolve', (new class extends \\Utopia\\Platform\\Action {})\n" .
+                "    ->callback(fn(\$resourceId) => \$backendEndpoint));"
+            );
+        }
+
+        return $action;
+    }
+
+    /**
+     * Execute actions by type.
+     *
+     * @param string $type
+     * @param mixed ...$args
+     * @return void
+     */
+    protected function executeActions(string $type, mixed ...$args): void
+    {
+        if ($this->service === null) {
+            return;
+        }
+
+        foreach ($this->getServiceActions($this->service) as $action) {
+            if ($action->getType() !== $type) {
+                continue;
+            }
+
+            $callback = $this->getActionCallback($action);
+            $callback(...$args);
+        }
+    }
+
+    /**
+     * Resolve action callback.
+     *
+     * @param Action $action
+     * @return callable
+     */
+    protected function getActionCallback(Action $action): callable
+    {
+        $callback = $action->getCallback();
+        if (!\is_callable($callback)) {
+            throw new \InvalidArgumentException('Action callback must be callable.');
+        }
+
+        return $callback;
+    }
+
+    /**
+     * Safely read actions from the service.
+     *
+     * @param Service $service
+     * @return array<string, Action>
+     */
+    protected function getServiceActions(Service $service): array
+    {
+        try {
+            return $service->getActions();
+        } catch (\Error) {
+            return [];
+        }
+    }
+
+    /**
+     * Safely read a single action from the service.
+     *
+     * @param Service $service
+     * @param string $key
+     * @return Action|null
+     */
+    protected function getServiceAction(Service $service, string $key): ?Action
+    {
+        try {
+            return $service->getAction($key);
+        } catch (\Error) {
+            return null;
         }
     }
 
