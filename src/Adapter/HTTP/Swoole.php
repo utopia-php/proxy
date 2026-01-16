@@ -2,9 +2,8 @@
 
 namespace Utopia\Proxy\Adapter\HTTP;
 
-use Utopia\Platform\Service;
 use Utopia\Proxy\Adapter;
-use Utopia\Proxy\Service\HTTP as HTTPService;
+use Utopia\Proxy\Resolver;
 
 /**
  * HTTP Protocol Adapter (Swoole Implementation)
@@ -13,7 +12,7 @@ use Utopia\Proxy\Service\HTTP as HTTPService;
  *
  * Routing:
  * - Input: Hostname (e.g., func-abc123.appwrite.network)
- * - Resolution: Provided by application via resolve action
+ * - Resolution: Provided by Resolver implementation
  * - Output: Backend endpoint (IP:port)
  *
  * Performance:
@@ -24,24 +23,19 @@ use Utopia\Proxy\Service\HTTP as HTTPService;
  *
  * Example:
  * ```php
- * $service = new \Utopia\Proxy\Service\HTTP();
- * $service->addAction('resolve', (new class extends \Utopia\Platform\Action {})
- *     ->callback(fn($hostname) => $myBackend->resolve($hostname)));
- * $adapter = new HTTP();
- * $adapter->setService($service);
+ * $resolver = new MyFunctionResolver();
+ * $adapter = new HTTP($resolver);
  * ```
  */
 class Swoole extends Adapter
 {
-    protected function defaultService(): ?Service
+    public function __construct(Resolver $resolver)
     {
-        return new HTTPService();
+        parent::__construct($resolver);
     }
 
     /**
      * Get adapter name
-     *
-     * @return string
      */
     public function getName(): string
     {
@@ -50,8 +44,6 @@ class Swoole extends Adapter
 
     /**
      * Get protocol type
-     *
-     * @return string
      */
     public function getProtocol(): string
     {
@@ -60,8 +52,6 @@ class Swoole extends Adapter
 
     /**
      * Get adapter description
-     *
-     * @return string
      */
     public function getDescription(): string
     {

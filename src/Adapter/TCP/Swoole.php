@@ -2,10 +2,9 @@
 
 namespace Utopia\Proxy\Adapter\TCP;
 
-use Utopia\Platform\Service;
-use Utopia\Proxy\Adapter;
-use Utopia\Proxy\Service\TCP as TCPService;
 use Swoole\Coroutine\Client;
+use Utopia\Proxy\Adapter;
+use Utopia\Proxy\Resolver;
 
 /**
  * TCP Protocol Adapter (Swoole Implementation)
@@ -14,7 +13,7 @@ use Swoole\Coroutine\Client;
  *
  * Routing:
  * - Input: Database hostname extracted from SNI or startup message
- * - Resolution: Provided by application via resolve action
+ * - Resolution: Provided by Resolver implementation
  * - Output: Backend endpoint (IP:port)
  *
  * Performance:
@@ -25,33 +24,24 @@ use Swoole\Coroutine\Client;
  *
  * Example:
  * ```php
- * $adapter = new TCP(port: 5432);
- * $service = new \Utopia\Proxy\Service\TCP();
- * $service->addAction('resolve', (new class extends \Utopia\Platform\Action {})
- *     ->callback(fn($hostname) => $myBackend->resolve($hostname)));
- * $adapter->setService($service);
+ * $resolver = new MyDatabaseResolver();
+ * $adapter = new TCP($resolver, port: 5432);
  * ```
  */
 class Swoole extends Adapter
 {
-    protected function defaultService(): ?Service
-    {
-        return new TCPService();
-    }
-
     /** @var array<string, Client> */
     protected array $backendConnections = [];
 
     public function __construct(
+        Resolver $resolver,
         protected int $port
     ) {
-        parent::__construct();
+        parent::__construct($resolver);
     }
 
     /**
      * Get adapter name
-     *
-     * @return string
      */
     public function getName(): string
     {
@@ -60,8 +50,6 @@ class Swoole extends Adapter
 
     /**
      * Get protocol type
-     *
-     * @return string
      */
     public function getProtocol(): string
     {
@@ -70,8 +58,6 @@ class Swoole extends Adapter
 
     /**
      * Get adapter description
-     *
-     * @return string
      */
     public function getDescription(): string
     {
@@ -80,8 +66,6 @@ class Swoole extends Adapter
 
     /**
      * Get listening port
-     *
-     * @return int
      */
     public function getPort(): int
     {
@@ -94,9 +78,6 @@ class Swoole extends Adapter
      * For PostgreSQL: Extract from SNI or startup message
      * For MySQL: Extract from initial handshake
      *
-     * @param string $data
-     * @param int $fd
-     * @return string
      * @throws \Exception
      */
     public function parseDatabaseId(string $data, int $fd): string
@@ -113,8 +94,6 @@ class Swoole extends Adapter
      *
      * Format: "database\0db-abc123\0"
      *
-     * @param string $data
-     * @return string
      * @throws \Exception
      */
     protected function parsePostgreSQLDatabaseId(string $data): string
@@ -170,8 +149,6 @@ class Swoole extends Adapter
      *
      * For MySQL, we typically get the database from subsequent COM_INIT_DB packet
      *
-     * @param string $data
-     * @return string
      * @throws \Exception
      */
     protected function parseMySQLDatabaseId(string $data): string
@@ -224,9 +201,6 @@ class Swoole extends Adapter
      *
      * Performance: Reuses connections for same database
      *
-     * @param string $databaseId
-     * @param int $clientFd
-     * @return Client
      * @throws \Exception
      */
     public function getBackendConnection(string $databaseId, int $clientFd): Client
@@ -242,12 +216,12 @@ class Swoole extends Adapter
         $result = $this->route($databaseId);
 
         // Create new TCP connection to backend
-        [$host, $port] = explode(':', $result->endpoint . ':' . $this->port);
-        $port = (int)$port;
+        [$host, $port] = explode(':', $result->endpoint.':'.$this->port);
+        $port = (int) $port;
 
         $client = new Client(SWOOLE_SOCK_TCP);
 
-        if (!$client->connect($host, $port, 30)) {
+        if (! $client->connect($host, $port, 30)) {
             throw new \Exception("Failed to connect to backend: {$host}:{$port}");
         }
 
@@ -258,10 +232,6 @@ class Swoole extends Adapter
 
     /**
      * Close backend connection
-     *
-     * @param string $databaseId
-     * @param int $clientFd
-     * @return void
      */
     public function closeBackendConnection(string $databaseId, int $clientFd): void
     {

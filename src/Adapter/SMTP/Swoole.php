@@ -2,9 +2,8 @@
 
 namespace Utopia\Proxy\Adapter\SMTP;
 
-use Utopia\Platform\Service;
 use Utopia\Proxy\Adapter;
-use Utopia\Proxy\Service\SMTP as SMTPService;
+use Utopia\Proxy\Resolver;
 
 /**
  * SMTP Protocol Adapter (Swoole Implementation)
@@ -13,7 +12,7 @@ use Utopia\Proxy\Service\SMTP as SMTPService;
  *
  * Routing:
  * - Input: Email domain (e.g., tenant123.appwrite.io)
- * - Resolution: Provided by application via resolve action
+ * - Resolution: Provided by Resolver implementation
  * - Output: Backend endpoint (IP:port)
  *
  * Performance:
@@ -23,24 +22,19 @@ use Utopia\Proxy\Service\SMTP as SMTPService;
  *
  * Example:
  * ```php
- * $adapter = new SMTP();
- * $service = new \Utopia\Proxy\Service\SMTP();
- * $service->addAction('resolve', (new class extends \Utopia\Platform\Action {})
- *     ->callback(fn($domain) => $myBackend->resolve($domain)));
- * $adapter->setService($service);
+ * $resolver = new MyEmailResolver();
+ * $adapter = new SMTP($resolver);
  * ```
  */
 class Swoole extends Adapter
 {
-    protected function defaultService(): ?Service
+    public function __construct(Resolver $resolver)
     {
-        return new SMTPService();
+        parent::__construct($resolver);
     }
 
     /**
      * Get adapter name
-     *
-     * @return string
      */
     public function getName(): string
     {
@@ -49,8 +43,6 @@ class Swoole extends Adapter
 
     /**
      * Get protocol type
-     *
-     * @return string
      */
     public function getProtocol(): string
     {
@@ -59,8 +51,6 @@ class Swoole extends Adapter
 
     /**
      * Get adapter description
-     *
-     * @return string
      */
     public function getDescription(): string
     {

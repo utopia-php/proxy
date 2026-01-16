@@ -2,25 +2,43 @@
 
 namespace Utopia\Proxy\Server\TCP;
 
-use Utopia\Proxy\Adapter\TCP\Swoole as TCPAdapter;
 use Swoole\Coroutine;
 use Swoole\Coroutine\Client;
 use Swoole\Coroutine\Server as CoroutineServer;
 use Swoole\Coroutine\Server\Connection;
+use Utopia\Proxy\Adapter\TCP\Swoole as TCPAdapter;
+use Utopia\Proxy\Resolver;
 
 /**
  * High-performance TCP proxy server (Swoole Coroutine Implementation)
+ *
+ * Example:
+ * ```php
+ * $resolver = new MyDatabaseResolver();
+ * $server = new SwooleCoroutine($resolver, host: '0.0.0.0', ports: [5432, 3306]);
+ * $server->start();
+ * ```
  */
 class SwooleCoroutine
 {
     /** @var array<int, CoroutineServer> */
     protected array $servers = [];
+
     /** @var array<int, TCPAdapter> */
     protected array $adapters = [];
+
+    /** @var array<string, mixed> */
     protected array $config;
+
+    /** @var array<int, int> */
     protected array $ports;
 
+    /**
+     * @param  array<int, int>  $ports
+     * @param  array<string, mixed>  $config
+     */
     public function __construct(
+        protected Resolver $resolver,
         string $host = '0.0.0.0',
         array $ports = [5432, 3306], // PostgreSQL, MySQL
         int $workers = 16,
@@ -55,18 +73,21 @@ class SwooleCoroutine
     protected function initAdapters(): void
     {
         foreach ($this->ports as $port) {
-            if (isset($this->config['adapter_factory'])) {
-                $this->adapters[$port] = $this->config['adapter_factory']($port);
-            } else {
-                $this->adapters[$port] = new TCPAdapter(port: $port);
+            $adapter = new TCPAdapter($this->resolver, port: $port);
+
+            // Apply skip_validation config if set
+            if (! empty($this->config['skip_validation'])) {
+                $adapter->setSkipValidation(true);
             }
+
+            $this->adapters[$port] = $adapter;
         }
     }
 
     protected function configureServers(string $host): void
     {
         foreach ($this->ports as $port) {
-            $server = new CoroutineServer($host, $port, false, (bool)$this->config['enable_reuse_port']);
+            $server = new CoroutineServer($host, $port, false, (bool) $this->config['enable_reuse_port']);
             $server->set([
                 'worker_num' => $this->config['workers'],
                 'reactor_num' => $this->config['reactor_num'],
@@ -109,10 +130,16 @@ class SwooleCoroutine
 
     public function onStart(): void
     {
-        echo "TCP Proxy Server started at {$this->config['host']}\n";
-        echo "Ports: " . implode(', ', $this->ports) . "\n";
-        echo "Workers: {$this->config['workers']}\n";
-        echo "Max connections: {$this->config['max_connections']}\n";
+        /** @var string $host */
+        $host = $this->config['host'];
+        /** @var int $workers */
+        $workers = $this->config['workers'];
+        /** @var int $maxConnections */
+        $maxConnections = $this->config['max_connections'];
+        echo "TCP Proxy Server started at {$host}\n";
+        echo 'Ports: '.implode(', ', $this->ports)."\n";
+        echo "Workers: {$workers}\n";
+        echo "Max connections: {$maxConnections}\n";
     }
 
     public function onWorkerStart(int $workerId = 0): void
@@ -125,7 +152,7 @@ class SwooleCoroutine
         $clientId = spl_object_id($connection);
         $adapter = $this->adapters[$port];
 
-        if (!empty($this->config['log_connections'])) {
+        if (! empty($this->config['log_connections'])) {
             echo "Client #{$clientId} connected to port {$port}\n";
         }
 
@@ -136,6 +163,7 @@ class SwooleCoroutine
         $data = $connection->recv();
         if ($data === '' || $data === false) {
             $connection->close();
+
             return;
         }
 
@@ -147,6 +175,7 @@ class SwooleCoroutine
         } catch (\Exception $e) {
             echo "Error handling data from #{$clientId}: {$e->getMessage()}\n";
             $connection->close();
+
             return;
         }
 
@@ -163,7 +192,7 @@ class SwooleCoroutine
         $adapter->closeBackendConnection($databaseId, $clientId);
         $connection->close();
 
-        if (!empty($this->config['log_connections'])) {
+        if (! empty($this->config['log_connections'])) {
             echo "Client #{$clientId} disconnected\n";
         }
     }
@@ -177,7 +206,9 @@ class SwooleCoroutine
                     break;
                 }
 
-                if ($connection->send($data) === false) {
+                /** @var string $dataStr */
+                $dataStr = $data;
+                if ($connection->send($dataStr) === false) {
                     break;
                 }
             }
@@ -201,12 +232,17 @@ class SwooleCoroutine
 
         if (Coroutine::getCid() > 0) {
             $runner();
+
             return;
         }
 
+        /** @phpstan-ignore-next-line */
         \Swoole\Coroutine\run($runner);
     }
 
+    /**
+     * @return array<string, mixed>
+     */
     public function getStats(): array
     {
         $adapterStats = [];
@@ -214,10 +250,13 @@ class SwooleCoroutine
             $adapterStats[$port] = $adapter->getStats();
         }
 
+        /** @var array<string, mixed> $coroutineStats */
+        $coroutineStats = Coroutine::stats();
+
         return [
             'connections' => 0,
             'workers' => 1,
-            'coroutines' => Coroutine::stats()['coroutine_num'] ?? 0,
+            'coroutines' => $coroutineStats['coroutine_num'] ?? 0,
             'adapters' => $adapterStats,
         ];
     }

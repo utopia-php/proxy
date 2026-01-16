@@ -2,31 +2,53 @@
 
 namespace Utopia\Proxy\Server\TCP;
 
-use Utopia\Proxy\Adapter\TCP\Swoole as TCPAdapter;
 use Swoole\Coroutine;
 use Swoole\Coroutine\Client;
 use Swoole\Server;
+use Utopia\Proxy\Adapter\TCP\Swoole as TCPAdapter;
+use Utopia\Proxy\Resolver;
 
 /**
  * High-performance TCP proxy server (Swoole Implementation)
+ *
+ * Example:
+ * ```php
+ * $resolver = new MyDatabaseResolver();
+ * $server = new Swoole($resolver, host: '0.0.0.0', ports: [5432, 3306]);
+ * $server->start();
+ * ```
  */
 class Swoole
 {
     protected Server $server;
-    /** @var array<TCPAdapter> */
+
+    /** @var array<int, TCPAdapter> */
     protected array $adapters = [];
+
+    /** @var array<string, mixed> */
     protected array $config;
+
+    /** @var array<int, int> */
     protected array $ports;
+
     /** @var array<int, bool> */
     protected array $forwarding = [];
+
     /** @var array<int, Client> */
     protected array $backendClients = [];
+
     /** @var array<int, string> */
     protected array $clientDatabaseIds = [];
+
     /** @var array<int, int> */
     protected array $clientPorts = [];
 
+    /**
+     * @param  array<int, int>  $ports
+     * @param  array<string, mixed>  $config
+     */
     public function __construct(
+        protected Resolver $resolver,
         string $host = '0.0.0.0',
         array $ports = [5432, 3306], // PostgreSQL, MySQL
         int $workers = 16,
@@ -108,22 +130,30 @@ class Swoole
 
     public function onStart(Server $server): void
     {
-        echo "TCP Proxy Server started at {$this->config['host']}\n";
-        echo "Ports: " . implode(', ', $this->ports) . "\n";
-        echo "Workers: {$this->config['workers']}\n";
-        echo "Max connections: {$this->config['max_connections']}\n";
+        /** @var string $host */
+        $host = $this->config['host'];
+        /** @var int $workers */
+        $workers = $this->config['workers'];
+        /** @var int $maxConnections */
+        $maxConnections = $this->config['max_connections'];
+        echo "TCP Proxy Server started at {$host}\n";
+        echo 'Ports: '.implode(', ', $this->ports)."\n";
+        echo "Workers: {$workers}\n";
+        echo "Max connections: {$maxConnections}\n";
     }
 
     public function onWorkerStart(Server $server, int $workerId): void
     {
         // Initialize TCP adapter per worker per port
         foreach ($this->ports as $port) {
-            // Use adapter from config, or create default
-            if (isset($this->config['adapter_factory'])) {
-                $this->adapters[$port] = $this->config['adapter_factory']($port);
-            } else {
-                $this->adapters[$port] = new TCPAdapter(port: $port);
+            $adapter = new TCPAdapter($this->resolver, port: $port);
+
+            // Apply skip_validation config if set
+            if (! empty($this->config['skip_validation'])) {
+                $adapter->setSkipValidation(true);
             }
+
+            $this->adapters[$port] = $adapter;
         }
 
         echo "Worker #{$workerId} started\n";
@@ -134,11 +164,13 @@ class Swoole
      */
     public function onConnect(Server $server, int $fd, int $reactorId): void
     {
+        /** @var array<string, mixed> $info */
         $info = $server->getClientInfo($fd);
+        /** @var int $port */
         $port = $info['server_port'] ?? 0;
         $this->clientPorts[$fd] = $port;
 
-        if (!empty($this->config['log_connections'])) {
+        if (! empty($this->config['log_connections'])) {
             echo "Client #{$fd} connected to port {$port}\n";
         }
     }
@@ -153,6 +185,7 @@ class Swoole
         // Fast path: existing connection - just forward
         if (isset($this->backendClients[$fd])) {
             $this->backendClients[$fd]->send($data);
+
             return;
         }
 
@@ -160,7 +193,9 @@ class Swoole
         try {
             $port = $this->clientPorts[$fd] ?? null;
             if ($port === null) {
+                /** @var array<string, mixed> $info */
                 $info = $server->getClientInfo($fd);
+                /** @var int $port */
                 $port = $info['server_port'] ?? 0;
                 if ($port === 0) {
                     throw new \Exception('Missing server port for connection');
@@ -180,6 +215,9 @@ class Swoole
             // Get backend connection
             $backendClient = $adapter->getBackendConnection($databaseId, $fd);
             $this->backendClients[$fd] = $backendClient;
+
+            // Notify connect callback
+            $adapter->notifyConnect($databaseId);
 
             // Forward initial data
             $backendClient->send($data);
@@ -217,7 +255,7 @@ class Swoole
 
     public function onClose(Server $server, int $fd, int $reactorId): void
     {
-        if (!empty($this->config['log_connections'])) {
+        if (! empty($this->config['log_connections'])) {
             echo "Client #{$fd} disconnected\n";
         }
 
@@ -232,6 +270,8 @@ class Swoole
             $databaseId = $this->clientDatabaseIds[$fd];
             $adapter = $this->adapters[$port] ?? null;
             if ($adapter) {
+                // Notify close callback
+                $adapter->notifyClose($databaseId);
                 $adapter->closeBackendConnection($databaseId, $fd);
             }
         }
@@ -246,6 +286,9 @@ class Swoole
         $this->server->start();
     }
 
+    /**
+     * @return array<string, mixed>
+     */
     public function getStats(): array
     {
         $adapterStats = [];
@@ -253,10 +296,15 @@ class Swoole
             $adapterStats[$port] = $adapter->getStats();
         }
 
+        /** @var array<string, mixed> $serverStats */
+        $serverStats = $this->server->stats();
+        /** @var array<string, mixed> $coroutineStats */
+        $coroutineStats = Coroutine::stats();
+
         return [
-            'connections' => $this->server->stats()['connection_num'] ?? 0,
-            'workers' => $this->server->stats()['worker_num'] ?? 0,
-            'coroutines' => Coroutine::stats()['coroutine_num'] ?? 0,
+            'connections' => $serverStats['connection_num'] ?? 0,
+            'workers' => $serverStats['worker_num'] ?? 0,
+            'coroutines' => $coroutineStats['coroutine_num'] ?? 0,
             'adapters' => $adapterStats,
         ];
     }

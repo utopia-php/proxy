@@ -2,23 +2,39 @@
 
 namespace Utopia\Proxy\Server\SMTP;
 
-use Utopia\Proxy\Adapter\SMTP\Swoole as SMTPAdapter;
 use Swoole\Coroutine;
 use Swoole\Coroutine\Client;
 use Swoole\Server;
+use Utopia\Proxy\Adapter\SMTP\Swoole as SMTPAdapter;
+use Utopia\Proxy\Resolver;
 
 /**
  * High-performance SMTP proxy server
+ *
+ * Example:
+ * ```php
+ * $resolver = new MyEmailResolver();
+ * $server = new Swoole($resolver, host: '0.0.0.0', port: 25);
+ * $server->start();
+ * ```
  */
 class Swoole
 {
     protected Server $server;
+
     protected SMTPAdapter $adapter;
+
+    /** @var array<string, mixed> */
     protected array $config;
+
     /** @var array<int, array{state: string, domain: ?string, backend: ?Client}> */
     protected array $connections = [];
 
+    /**
+     * @param  array<string, mixed>  $config
+     */
     public function __construct(
+        protected Resolver $resolver,
         string $host = '0.0.0.0',
         int $port = 25,
         int $workers = 16,
@@ -74,18 +90,26 @@ class Swoole
 
     public function onStart(Server $server): void
     {
-        echo "SMTP Proxy Server started at {$this->config['host']}:{$this->config['port']}\n";
-        echo "Workers: {$this->config['workers']}\n";
-        echo "Max connections: {$this->config['max_connections']}\n";
+        /** @var string $host */
+        $host = $this->config['host'];
+        /** @var int $port */
+        $port = $this->config['port'];
+        /** @var int $workers */
+        $workers = $this->config['workers'];
+        /** @var int $maxConnections */
+        $maxConnections = $this->config['max_connections'];
+        echo "SMTP Proxy Server started at {$host}:{$port}\n";
+        echo "Workers: {$workers}\n";
+        echo "Max connections: {$maxConnections}\n";
     }
 
     public function onWorkerStart(Server $server, int $workerId): void
     {
-        // Use adapter from config, or create default
-        if (isset($this->config['adapter'])) {
-            $this->adapter = $this->config['adapter'];
-        } else {
-            $this->adapter = new SMTPAdapter();
+        $this->adapter = new SMTPAdapter($this->resolver);
+
+        // Apply skip_validation config if set
+        if (! empty($this->config['skip_validation'])) {
+            $this->adapter->setSkipValidation(true);
         }
 
         echo "Worker #{$workerId} started (Adapter: {$this->adapter->getName()})\n";
@@ -117,7 +141,7 @@ class Swoole
     public function onReceive(Server $server, int $fd, int $reactorId, string $data): void
     {
         try {
-            if (!isset($this->connections[$fd])) {
+            if (! isset($this->connections[$fd])) {
                 $this->connections[$fd] = [
                     'state' => 'greeting',
                     'domain' => null,
@@ -158,6 +182,8 @@ class Swoole
 
     /**
      * Handle EHLO/HELO - extract domain and route to backend
+     *
+     * @param  array{state: string, domain: ?string, backend: ?Client}  $conn
      */
     protected function handleHelo(Server $server, int $fd, string $data, array &$conn): void
     {
@@ -183,10 +209,12 @@ class Swoole
 
     /**
      * Forward command to backend SMTP server
+     *
+     * @param  array{state: string, domain: ?string, backend: ?Client}  $conn
      */
     protected function forwardToBackend(Server $server, int $fd, string $data, array &$conn): void
     {
-        if (!isset($conn['backend']) || !$conn['backend'] instanceof Client) {
+        if (! isset($conn['backend']) || ! $conn['backend'] instanceof Client) {
             throw new \Exception('No backend connection');
         }
 
@@ -210,12 +238,12 @@ class Swoole
      */
     protected function connectToBackend(string $endpoint, int $port): Client
     {
-        [$host, $port] = explode(':', $endpoint . ':' . $port);
-        $port = (int)$port;
+        [$host, $port] = explode(':', $endpoint.':'.$port);
+        $port = (int) $port;
 
         $client = new Client(SWOOLE_SOCK_TCP);
 
-        if (!$client->connect($host, $port, 30)) {
+        if (! $client->connect($host, $port, 30)) {
             throw new \Exception("Failed to connect to backend SMTP: {$host}:{$port}");
         }
 
@@ -246,13 +274,21 @@ class Swoole
         $this->server->start();
     }
 
+    /**
+     * @return array<string, mixed>
+     */
     public function getStats(): array
     {
+        /** @var array<string, mixed> $serverStats */
+        $serverStats = $this->server->stats();
+        /** @var array<string, mixed> $coroutineStats */
+        $coroutineStats = Coroutine::stats();
+
         return [
-            'connections' => $this->server->stats()['connection_num'] ?? 0,
-            'workers' => $this->server->stats()['worker_num'] ?? 0,
-            'coroutines' => Coroutine::stats()['coroutine_num'] ?? 0,
-            'adapter' => $this->adapter?->getStats() ?? [],
+            'connections' => $serverStats['connection_num'] ?? 0,
+            'workers' => $serverStats['worker_num'] ?? 0,
+            'coroutines' => $coroutineStats['coroutine_num'] ?? 0,
+            'adapter' => $this->adapter->getStats(),
         ];
     }
 }

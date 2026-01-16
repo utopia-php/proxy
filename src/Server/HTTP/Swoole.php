@@ -2,27 +2,44 @@
 
 namespace Utopia\Proxy\Server\HTTP;
 
-use Utopia\Proxy\Adapter\HTTP\Swoole as HTTPAdapter;
 use Swoole\Coroutine\Channel;
 use Swoole\Coroutine\Client as CoroutineClient;
-use Swoole\Http\Server;
 use Swoole\Http\Request;
 use Swoole\Http\Response;
+use Swoole\Http\Server;
+use Utopia\Proxy\Adapter\HTTP\Swoole as HTTPAdapter;
+use Utopia\Proxy\Resolver;
 
 /**
  * High-performance HTTP proxy server (Swoole Implementation)
+ *
+ * Example:
+ * ```php
+ * $resolver = new MyFunctionResolver();
+ * $server = new Swoole($resolver, host: '0.0.0.0', port: 80);
+ * $server->start();
+ * ```
  */
 class Swoole
 {
     protected Server $server;
+
     protected HTTPAdapter $adapter;
+
+    /** @var array<string, mixed> */
     protected array $config;
+
     /** @var array<string, Channel> */
     protected array $backendPools = [];
+
     /** @var array<string, Channel> */
     protected array $rawBackendPools = [];
 
+    /**
+     * @param  array<string, mixed>  $config
+     */
     public function __construct(
+        protected Resolver $resolver,
         string $host = '0.0.0.0',
         int $port = 80,
         int $workers = 16,
@@ -64,6 +81,9 @@ class Swoole
             'max_request' => 0,
             'raw_backend' => false,
             'raw_backend_assume_ok' => false,
+            'request_handler' => null, // Custom request handler callback
+            'worker_start' => null, // Worker start callback
+            'worker_stop' => null, // Worker stop callback
         ], $config);
 
         $this->server = new Server($host, $port, $this->config['server_mode']);
@@ -111,18 +131,32 @@ class Swoole
 
     public function onStart(Server $server): void
     {
-        echo "HTTP Proxy Server started at http://{$this->config['host']}:{$this->config['port']}\n";
-        echo "Workers: {$this->config['workers']}\n";
-        echo "Max connections: {$this->config['max_connections']}\n";
+        /** @var string $host */
+        $host = $this->config['host'];
+        /** @var int $port */
+        $port = $this->config['port'];
+        /** @var int $workers */
+        $workers = $this->config['workers'];
+        /** @var int $maxConnections */
+        $maxConnections = $this->config['max_connections'];
+        echo "HTTP Proxy Server started at http://{$host}:{$port}\n";
+        echo "Workers: {$workers}\n";
+        echo "Max connections: {$maxConnections}\n";
     }
 
     public function onWorkerStart(Server $server, int $workerId): void
     {
-        // Use adapter from config, or create default
-        if (isset($this->config['adapter'])) {
-            $this->adapter = $this->config['adapter'];
-        } else {
-            $this->adapter = new HTTPAdapter();
+        $this->adapter = new HTTPAdapter($this->resolver);
+
+        // Apply skip_validation config if set
+        if (! empty($this->config['skip_validation'])) {
+            $this->adapter->setSkipValidation(true);
+        }
+
+        // Call worker start callback if provided
+        $workerStartCallback = $this->config['worker_start'];
+        if ($workerStartCallback !== null && is_callable($workerStartCallback)) {
+            $workerStartCallback($server, $workerId, $this->adapter);
         }
 
         echo "Worker #{$workerId} started (Adapter: {$this->adapter->getName()})\n";
@@ -135,34 +169,57 @@ class Swoole
      */
     public function onRequest(Request $request, Response $response): void
     {
+        // Custom request handler takes precedence
+        $requestHandler = $this->config['request_handler'];
+        if ($requestHandler !== null && is_callable($requestHandler)) {
+            try {
+                $requestHandler($request, $response, $this->adapter);
+            } catch (\Throwable $e) {
+                error_log("Request handler error: {$e->getMessage()}");
+                $response->status(500);
+                $response->end('Internal Server Error');
+            }
+
+            return;
+        }
+
         $startTime = null;
-        if ($this->config['telemetry_headers'] && !$this->config['fast_path']) {
+        if ($this->config['telemetry_headers'] && ! $this->config['fast_path']) {
             $startTime = microtime(true);
         }
 
         try {
-            if ($this->config['direct_response'] !== null) {
-                $response->status((int)$this->config['direct_response_status']);
-                $response->end((string)$this->config['direct_response']);
+            $directResponse = $this->config['direct_response'];
+            if ($directResponse !== null) {
+                /** @var int $directResponseStatus */
+                $directResponseStatus = $this->config['direct_response_status'];
+                $response->status($directResponseStatus);
+                /** @var string $directResponseStr */
+                $directResponseStr = $directResponse;
+                $response->end($directResponseStr);
+
                 return;
             }
 
-            $endpoint = $this->config['fixed_backend'] ?? null;
+            $fixedBackend = $this->config['fixed_backend'];
+            $endpoint = is_string($fixedBackend) ? $fixedBackend : null;
             $result = null;
             if ($endpoint === null) {
                 // Extract hostname from request
                 $hostname = $request->header['host'] ?? null;
 
-                if (!$hostname) {
+                if (! $hostname) {
                     $response->status(400);
                     $response->end('Missing Host header');
+
                     return;
                 }
 
                 // Validate hostname format (basic sanitization)
-                if (!$this->isValidHostname($hostname)) {
+                if (! $this->isValidHostname($hostname)) {
                     $response->status(400);
                     $response->end('Invalid Host header');
+
                     return;
                 }
 
@@ -173,7 +230,7 @@ class Swoole
 
             // Prepare telemetry data before forwarding
             $telemetryData = null;
-            if ($this->config['telemetry_headers'] && !$this->config['fast_path']) {
+            if ($this->config['telemetry_headers'] && ! $this->config['fast_path']) {
                 $telemetryData = [
                     'start_time' => $startTime,
                     'result' => $result,
@@ -181,7 +238,8 @@ class Swoole
             }
 
             // Forward request to backend (zero-copy where possible)
-            if (!empty($this->config['raw_backend'])) {
+            /** @var string $endpoint */
+            if (! empty($this->config['raw_backend'])) {
                 $this->forwardRawRequest($request, $response, $endpoint, $telemetryData);
             } else {
                 $this->forwardRequest($request, $response, $endpoint, $telemetryData);
@@ -206,26 +264,22 @@ class Swoole
      *
      * Performance: Zero-copy streaming for large responses
      *
-     * @param Request $request
-     * @param Response $response
-     * @param string $endpoint
-     * @param array|null $telemetryData
-     * @return void
+     * @param  array<string, mixed>|null  $telemetryData
      */
     protected function forwardRequest(Request $request, Response $response, string $endpoint, ?array $telemetryData = null): void
     {
-        [$host, $port] = explode(':', $endpoint . ':80');
-        $port = (int)$port;
+        [$host, $port] = explode(':', $endpoint.':80');
+        $port = (int) $port;
 
         $poolKey = "{$host}:{$port}";
-        if (!isset($this->backendPools[$poolKey])) {
+        if (! isset($this->backendPools[$poolKey])) {
             $this->backendPools[$poolKey] = new Channel($this->config['backend_pool_size']);
         }
         $pool = $this->backendPools[$poolKey];
 
         $isNewClient = false;
         $client = $pool->pop($this->config['backend_pool_timeout']);
-        if (!$client instanceof \Swoole\Coroutine\Http\Client) {
+        if (! $client instanceof \Swoole\Coroutine\Http\Client) {
             $client = new \Swoole\Coroutine\Http\Client($host, $port);
             $client->set([
                 'timeout' => $this->config['backend_timeout'],
@@ -251,7 +305,7 @@ class Swoole
             }
             $headers['Host'] = $port === 80 ? $host : "{$host}:{$port}";
             $client->setHeaders($headers);
-            if (!empty($request->cookie)) {
+            if (! empty($request->cookie)) {
                 $client->setCookies($request->cookie);
             }
         }
@@ -289,16 +343,16 @@ class Swoole
             $response->status($client->statusCode);
         }
 
-        if (!$this->config['fast_path']) {
+        if (! $this->config['fast_path']) {
             // Forward response headers
-            if (!empty($client->headers)) {
+            if (! empty($client->headers)) {
                 foreach ($client->headers as $key => $value) {
                     $response->header($key, $value);
                 }
             }
 
             // Forward response cookies
-            if (!empty($client->set_cookie_headers)) {
+            if (! empty($client->set_cookie_headers)) {
                 foreach ($client->set_cookie_headers as $cookie) {
                     $response->header('Set-Cookie', $cookie);
                 }
@@ -307,15 +361,17 @@ class Swoole
 
         // Add telemetry headers before ending response
         if ($telemetryData !== null) {
-            $latency = round((microtime(true) - $telemetryData['start_time']) * 1000, 2);
-            $response->header('X-Proxy-Latency-Ms', (string)$latency);
+            /** @var float $startTime */
+            $startTime = $telemetryData['start_time'];
+            $latency = round((microtime(true) - $startTime) * 1000, 2);
+            $response->header('X-Proxy-Latency-Ms', (string) $latency);
 
-            if (isset($telemetryData['result'])) {
-                $result = $telemetryData['result'];
-                $response->header('X-Proxy-Protocol', $result->protocol);
+            $telemetryResult = $telemetryData['result'] ?? null;
+            if ($telemetryResult instanceof \Utopia\Proxy\ConnectionResult) {
+                $response->header('X-Proxy-Protocol', $telemetryResult->protocol);
 
-                if (isset($result->metadata['cached'])) {
-                    $response->header('X-Proxy-Cache', $result->metadata['cached'] ? 'HIT' : 'MISS');
+                if (isset($telemetryResult->metadata['cached'])) {
+                    $response->header('X-Proxy-Cache', $telemetryResult->metadata['cached'] ? 'HIT' : 'MISS');
                 }
             }
         }
@@ -324,7 +380,7 @@ class Swoole
         $response->end($client->body);
 
         if ($client->connected) {
-            if (!$pool->push($client, 0.001)) {
+            if (! $pool->push($client, 0.001)) {
                 $client->close();
             }
         } else {
@@ -339,52 +395,51 @@ class Swoole
      * - Backend replies with Content-Length (no chunked encoding).
      * - Only GET/HEAD are supported; other methods fall back to HTTP client.
      *
-     * @param Request $request
-     * @param Response $response
-     * @param string $endpoint
-     * @param array|null $telemetryData
-     * @return void
+     * @param  array<string, mixed>|null  $telemetryData
      */
     protected function forwardRawRequest(Request $request, Response $response, string $endpoint, ?array $telemetryData = null): void
     {
         $method = strtoupper($request->server['request_method'] ?? 'GET');
         if ($method !== 'GET' && $method !== 'HEAD') {
             $this->forwardRequest($request, $response, $endpoint, $telemetryData);
+
             return;
         }
 
-        [$host, $port] = explode(':', $endpoint . ':80');
-        $port = (int)$port;
+        [$host, $port] = explode(':', $endpoint.':80');
+        $port = (int) $port;
 
         $poolKey = "{$host}:{$port}";
-        if (!isset($this->rawBackendPools[$poolKey])) {
+        if (! isset($this->rawBackendPools[$poolKey])) {
             $this->rawBackendPools[$poolKey] = new Channel($this->config['backend_pool_size']);
         }
         $pool = $this->rawBackendPools[$poolKey];
 
         $client = $pool->pop($this->config['backend_pool_timeout']);
-        if (!$client instanceof CoroutineClient || !$client->isConnected()) {
+        if (! $client instanceof CoroutineClient || ! $client->isConnected()) {
             $client = new CoroutineClient(SWOOLE_SOCK_TCP);
             $client->set([
                 'timeout' => $this->config['backend_timeout'],
             ]);
-            if (!$client->connect($host, $port, $this->config['backend_timeout'])) {
+            if (! $client->connect($host, $port, $this->config['backend_timeout'])) {
                 $response->status(502);
                 $response->end('Bad Gateway');
+
                 return;
             }
         }
 
         $path = $request->server['request_uri'] ?? '/';
         $hostHeader = $port === 80 ? $host : "{$host}:{$port}";
-        $requestLine = $method . ' ' . $path . " HTTP/1.1\r\n" .
-            'Host: ' . $hostHeader . "\r\n" .
+        $requestLine = $method.' '.$path." HTTP/1.1\r\n".
+            'Host: '.$hostHeader."\r\n".
             "Connection: keep-alive\r\n\r\n";
 
         if ($client->send($requestLine) === false) {
             $client->close();
             $response->status(502);
             $response->end('Bad Gateway');
+
             return;
         }
 
@@ -395,6 +450,7 @@ class Swoole
                 $client->close();
                 $response->status(502);
                 $response->end('Bad Gateway');
+
                 return;
             }
             $buffer .= $chunk;
@@ -406,14 +462,12 @@ class Swoole
         $chunked = false;
 
         $lines = explode("\r\n", $headerPart);
-        if (!empty($lines)) {
-            if (preg_match('/^HTTP\/\\d+\\.\\d+\\s+(\\d+)/', $lines[0], $matches)) {
-                $statusCode = (int)$matches[1];
-            }
+        if (preg_match('/^HTTP\/\\d+\\.\\d+\\s+(\\d+)/', $lines[0], $matches)) {
+            $statusCode = (int) $matches[1];
         }
         foreach ($lines as $line) {
             if (stripos($line, 'content-length:') === 0) {
-                $contentLength = (int)trim(substr($line, 15));
+                $contentLength = (int) trim(substr($line, 15));
                 break;
             }
             if (stripos($line, 'transfer-encoding:') === 0 && stripos($line, 'chunked') !== false) {
@@ -421,7 +475,7 @@ class Swoole
             }
         }
 
-        if (!$this->config['raw_backend_assume_ok']) {
+        if (! $this->config['raw_backend_assume_ok']) {
             $response->status($statusCode);
         }
 
@@ -429,34 +483,42 @@ class Swoole
             // Fallback: send what we have and close connection to avoid reusing a bad state.
             $response->end($bodyPart);
             $client->close();
+
             return;
         }
 
-        $body = $bodyPart;
-        $remaining = $contentLength - strlen($bodyPart);
+        /** @var string $bodyPartStr */
+        $bodyPartStr = $bodyPart;
+        $body = $bodyPartStr;
+        $remaining = $contentLength - strlen($bodyPartStr);
         while ($remaining > 0) {
             $chunk = $client->recv(min(8192, $remaining));
             if ($chunk === '' || $chunk === false) {
                 $client->close();
                 $response->status(502);
                 $response->end('Bad Gateway');
+
                 return;
             }
-            $body .= $chunk;
-            $remaining -= strlen($chunk);
+            /** @var string $chunkStr */
+            $chunkStr = $chunk;
+            $body .= $chunkStr;
+            $remaining -= strlen($chunkStr);
         }
 
         // Add telemetry headers before ending response
         if ($telemetryData !== null) {
-            $latency = round((microtime(true) - $telemetryData['start_time']) * 1000, 2);
-            $response->header('X-Proxy-Latency-Ms', (string)$latency);
+            /** @var float $startTime */
+            $startTime = $telemetryData['start_time'];
+            $latency = round((microtime(true) - $startTime) * 1000, 2);
+            $response->header('X-Proxy-Latency-Ms', (string) $latency);
 
-            if (isset($telemetryData['result'])) {
-                $result = $telemetryData['result'];
-                $response->header('X-Proxy-Protocol', $result->protocol);
+            $telemetryResult = $telemetryData['result'] ?? null;
+            if ($telemetryResult instanceof \Utopia\Proxy\ConnectionResult) {
+                $response->header('X-Proxy-Protocol', $telemetryResult->protocol);
 
-                if (isset($result->metadata['cached'])) {
-                    $response->header('X-Proxy-Cache', $result->metadata['cached'] ? 'HIT' : 'MISS');
+                if (isset($telemetryResult->metadata['cached'])) {
+                    $response->header('X-Proxy-Cache', $telemetryResult->metadata['cached'] ? 'HIT' : 'MISS');
                 }
             }
         }
@@ -464,7 +526,7 @@ class Swoole
         $response->end($body);
 
         if ($client->isConnected()) {
-            if (!$pool->push($client, 0.001)) {
+            if (! $pool->push($client, 0.001)) {
                 $client->close();
             }
         } else {
@@ -474,14 +536,14 @@ class Swoole
 
     /**
      * Validate hostname format
-     *
-     * @param string $hostname
-     * @return bool
      */
     protected function isValidHostname(string $hostname): bool
     {
         // Remove port if present
         $host = preg_replace('/:\d+$/', '', $hostname);
+        if ($host === null) {
+            return false;
+        }
 
         // Check for valid hostname/domain format
         // Allow alphanumeric, hyphens, dots, and underscores
@@ -499,13 +561,19 @@ class Swoole
         $this->server->start();
     }
 
+    /**
+     * @return array<string, mixed>
+     */
     public function getStats(): array
     {
+        /** @var array<string, mixed> $stats */
+        $stats = $this->server->stats();
+
         return [
-            'connections' => $this->server->stats()['connection_num'] ?? 0,
-            'requests' => $this->server->stats()['request_count'] ?? 0,
-            'workers' => $this->server->stats()['worker_num'] ?? 0,
-            'adapter' => $this->adapter?->getStats() ?? [],
+            'connections' => $stats['connection_num'] ?? 0,
+            'requests' => $stats['request_count'] ?? 0,
+            'workers' => $stats['worker_num'] ?? 0,
+            'adapter' => $this->adapter->getStats(),
         ];
     }
 }
