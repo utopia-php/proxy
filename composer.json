@@ -1,5 +1,5 @@
 {
-    "name": "appwrite/proxy",
+    "name": "utopia-php/protocol-proxy",
     "description": "High-performance protocol-agnostic proxy with Swoole.",
     "type": "library",
     "license": "BSD-3-Clause",
@@ -10,7 +10,7 @@
         }
     ],
     "require": {
-        "php": ">=8.0",
+        "php": ">=8.3",
         "ext-swoole": ">=5.0",
         "ext-redis": "*",
         "utopia-php/database": "4.*",
