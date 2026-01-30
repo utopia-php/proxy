@@ -152,34 +152,37 @@ echo ""
 # Run benchmark
 cd "$WORKDIR"
 
-echo "=== TCP Proxy Benchmark (connection rate) ==="
+echo "=== TCP Proxy Benchmark (1M connections burst) ==="
 BENCH_PAYLOAD_BYTES=0 \
-BENCH_CONCURRENCY=4000 \
-BENCH_CONNECTIONS=400000 \
+BENCH_CONCURRENCY=8000 \
+BENCH_CONNECTIONS=1000000 \
 php benchmarks/tcp.php
 
 echo ""
-echo "=== TCP Proxy Benchmark (throughput) ==="
+echo "=== TCP Proxy Benchmark (throughput 16GB) ==="
 BENCH_PAYLOAD_BYTES=65536 \
-BENCH_TARGET_BYTES=8589934592 \
-BENCH_CONCURRENCY=2000 \
+BENCH_TARGET_BYTES=17179869184 \
+BENCH_CONCURRENCY=4000 \
 php benchmarks/tcp.php
 
 echo ""
-echo "=== TCP Proxy Benchmark (sustained 60s) ==="
+echo "=== TCP Proxy Benchmark (100k sustained 60s) ==="
 BENCH_DURATION=60 \
-BENCH_CONCURRENCY=1000 \
+BENCH_CONCURRENCY=4000 \
 BENCH_PAYLOAD_BYTES=1024 \
 php benchmarks/tcp-sustained.php
 
 echo ""
 echo "=== Done ==="
 echo ""
-echo "For longer soak test, run:"
-echo "  BENCH_DURATION=300 BENCH_CONCURRENCY=2000 php benchmarks/tcp-sustained.php"
+echo "These are PER-POD numbers. Scale linearly with more pods:"
+echo "  5 pods × 100k conn/s = 500k conn/s total"
 echo ""
-echo "For max connections test, run:"
-echo "  BENCH_MODE=max_connections BENCH_TARGET_CONNECTIONS=50000 php benchmarks/tcp-sustained.php"
+echo "For longer soak test:"
+echo "  BENCH_DURATION=300 BENCH_CONCURRENCY=4000 php benchmarks/tcp-sustained.php"
+echo ""
+echo "For max concurrent connections test:"
+echo "  BENCH_MODE=max_connections BENCH_TARGET_CONNECTIONS=100000 php benchmarks/tcp-sustained.php"
 echo "Results above. Re-run with different settings:"
 echo "  cd $WORKDIR"
 echo "  BENCH_CONCURRENCY=8000 BENCH_CONNECTIONS=800000 php benchmarks/tcp.php"
