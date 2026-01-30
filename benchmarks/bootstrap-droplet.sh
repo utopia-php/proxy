@@ -3,11 +3,16 @@
 # One-shot benchmark runner for fresh Linux droplet
 #
 # Usage (as root on fresh Ubuntu 22.04/24.04):
-#   curl -sL https://raw.githubusercontent.com/utopia-php/protocol-proxy/dev/benchmarks/bootstrap-droplet.sh | bash
+#   curl -sL https://raw.githubusercontent.com/utopia-php/protocol-proxy/dev/benchmarks/bootstrap-droplet.sh | sudo bash
 #
-# Or clone and run:
-#   git clone https://github.com/utopia-php/protocol-proxy.git
-#   cd protocol-proxy && sudo ./benchmarks/bootstrap-droplet.sh
+# Quick Docker test (no install needed):
+#   docker run --rm --privileged phpswoole/swoole:php8.3-alpine sh -c '
+#     apk add --no-cache git composer > /dev/null 2>&1
+#     cd /tmp && git clone --depth 1 -b dev https://github.com/utopia-php/protocol-proxy.git
+#     cd protocol-proxy && composer install --quiet
+#     BACKEND_HOST=127.0.0.1 BACKEND_PORT=15432 php benchmarks/tcp-backend.php &
+#     sleep 2 && BENCH_PORT=15432 BENCH_CONCURRENCY=100 BENCH_CONNECTIONS=5000 php benchmarks/tcp.php
+#   '
 #
 set -e
 
