@@ -43,6 +43,9 @@ class Swoole
     /** @var array<int, int> */
     protected array $clientPorts = [];
 
+    /** @var int Recv buffer size for forwarding - larger = fewer syscalls */
+    protected int $recvBufferSize = 131072; // 128KB
+
     /**
      * @param  array<int, int>  $ports
      * @param  array<string, mixed>  $config
@@ -63,7 +66,7 @@ class Swoole
             'socket_buffer_size' => 16 * 1024 * 1024, // 16MB for database traffic
             'buffer_output_size' => 16 * 1024 * 1024,
             'reactor_num' => swoole_cpu_num() * 2,
-            'dispatch_mode' => 2,
+            'dispatch_mode' => 2, // Fixed dispatch for connection affinity
             'enable_reuse_port' => true,
             'backlog' => 65535,
             'package_max_length' => 32 * 1024 * 1024, // 32MB max query/result
@@ -74,7 +77,14 @@ class Swoole
             'max_wait_time' => 60,
             'log_level' => SWOOLE_LOG_ERROR,
             'log_connections' => false,
+            'recv_buffer_size' => 131072, // 128KB recv buffer for forwarding
+            'backend_connect_timeout' => 5.0, // Backend connection timeout
         ], $config);
+
+        // Apply recv buffer size from config
+        /** @var int $recvBufferSize */
+        $recvBufferSize = $this->config['recv_buffer_size'];
+        $this->recvBufferSize = $recvBufferSize;
 
         // Create main server on first port
         $this->server = new Server($host, $ports[0], SWOOLE_PROCESS, SWOOLE_SOCK_TCP);
@@ -151,6 +161,13 @@ class Swoole
             // Apply skip_validation config if set
             if (! empty($this->config['skip_validation'])) {
                 $adapter->setSkipValidation(true);
+            }
+
+            // Apply backend connection timeout
+            if (isset($this->config['backend_connect_timeout'])) {
+                /** @var float $timeout */
+                $timeout = $this->config['backend_connect_timeout'];
+                $adapter->setConnectTimeout($timeout);
             }
 
             $this->adapters[$port] = $adapter;
@@ -239,10 +256,12 @@ class Swoole
      */
     protected function startForwarding(Server $server, int $clientFd, Client $backendClient): void
     {
-        Coroutine::create(function () use ($server, $clientFd, $backendClient) {
-            // Forward backend -> client
+        $bufferSize = $this->recvBufferSize;
+
+        Coroutine::create(function () use ($server, $clientFd, $backendClient, $bufferSize) {
+            // Forward backend -> client with larger buffer for fewer syscalls
             while ($server->exist($clientFd) && $backendClient->isConnected()) {
-                $data = $backendClient->recv(65536);
+                $data = $backendClient->recv($bufferSize);
 
                 if ($data === false || $data === '') {
                     break;

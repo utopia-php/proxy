@@ -33,11 +33,24 @@ class Swoole extends Adapter
     /** @var array<string, Client> */
     protected array $backendConnections = [];
 
+    /** @var float Backend connection timeout in seconds */
+    protected float $connectTimeout = 5.0;
+
     public function __construct(
         Resolver $resolver,
         protected int $port
     ) {
         parent::__construct($resolver);
+    }
+
+    /**
+     * Set backend connection timeout
+     */
+    public function setConnectTimeout(float $timeout): static
+    {
+        $this->connectTimeout = $timeout;
+
+        return $this;
     }
 
     /**
@@ -221,7 +234,15 @@ class Swoole extends Adapter
 
         $client = new Client(SWOOLE_SOCK_TCP);
 
-        if (! $client->connect($host, $port, 30)) {
+        // Optimize socket for low latency
+        $client->set([
+            'timeout' => $this->connectTimeout,
+            'connect_timeout' => $this->connectTimeout,
+            'open_tcp_nodelay' => true, // Disable Nagle's algorithm
+            'socket_buffer_size' => 2 * 1024 * 1024, // 2MB buffer
+        ]);
+
+        if (! $client->connect($host, $port, $this->connectTimeout)) {
             throw new \Exception("Failed to connect to backend: {$host}:{$port}");
         }
 

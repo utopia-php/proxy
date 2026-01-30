@@ -30,7 +30,7 @@ use Utopia\Proxy\Server\HTTP\Swoole as HTTPServer;
  * - Connection lifecycle tracking
  * - Statistics and telemetry
  */
-$resolver = new class implements Resolver {
+$resolver = new class () implements Resolver {
     /** @var array<string, int> */
     private array $connectionCounts = [];
 
