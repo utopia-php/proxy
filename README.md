@@ -8,7 +8,7 @@ High-performance, protocol-agnostic proxy built on Swoole for blazing fast conne
 - **~33KB per connection** memory footprint
 - **18k+ connections/sec** connection establishment rate
 - **Linear scaling** across multiple pods (5 pods = 3M+ connections)
-- **Zero-copy forwarding**: Minimize memory allocations
+- **Minimal-copy forwarding**: Large buffers, no payload parsing
 - **Connection pooling**: Reuse connections to backend services
 - **Async I/O**: Non-blocking operations throughout
 

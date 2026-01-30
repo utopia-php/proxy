@@ -16,11 +16,11 @@ use Utopia\Proxy\Resolver;
  * - Resolution: Provided by Resolver implementation
  * - Output: Backend endpoint (IP:port)
  *
- * Performance:
- * - 100,000+ connections/second
- * - 10GB/s+ throughput
- * - <1ms forwarding overhead
- * - Zero-copy where possible
+ * Performance (validated on 8-core/32GB):
+ * - 670k+ concurrent connections
+ * - 18k connections/sec establishment rate
+ * - ~33KB memory per connection
+ * - Minimal-copy forwarding (128KB buffers, no payload parsing)
  *
  * Example:
  * ```php
