@@ -166,7 +166,20 @@ BENCH_CONCURRENCY=2000 \
 php benchmarks/tcp.php
 
 echo ""
+echo "=== TCP Proxy Benchmark (sustained 60s) ==="
+BENCH_DURATION=60 \
+BENCH_CONCURRENCY=1000 \
+BENCH_PAYLOAD_BYTES=1024 \
+php benchmarks/tcp-sustained.php
+
+echo ""
 echo "=== Done ==="
+echo ""
+echo "For longer soak test, run:"
+echo "  BENCH_DURATION=300 BENCH_CONCURRENCY=2000 php benchmarks/tcp-sustained.php"
+echo ""
+echo "For max connections test, run:"
+echo "  BENCH_MODE=max_connections BENCH_TARGET_CONNECTIONS=50000 php benchmarks/tcp-sustained.php"
 echo "Results above. Re-run with different settings:"
 echo "  cd $WORKDIR"
 echo "  BENCH_CONCURRENCY=8000 BENCH_CONNECTIONS=800000 php benchmarks/tcp.php"
