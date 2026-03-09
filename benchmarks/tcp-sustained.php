@@ -23,7 +23,6 @@
 
 use Swoole\Coroutine;
 use Swoole\Coroutine\Client;
-use Swoole\Timer;
 
 Co\run(function () {
     echo "TCP Proxy Sustained Load Test\n";

@@ -42,7 +42,7 @@
         "test:all": "phpunit",
         "lint": "pint --test --config=pint.json",
         "format": "pint --config=pint.json",
-        "check": "phpstan analyse --level=max src tests"
+        "check": "phpstan analyse --level=max --memory-limit=2G src tests"
     },
     "config": {
         "php": "8.4",
