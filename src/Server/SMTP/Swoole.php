@@ -214,7 +214,7 @@ class Swoole
      */
     protected function forwardToBackend(Server $server, int $fd, string $data, array &$conn): void
     {
-        if (! isset($conn['backend']) || ! $conn['backend'] instanceof Client) {
+        if (! isset($conn['backend'])) {
             throw new \Exception('No backend connection');
         }
 
@@ -262,7 +262,7 @@ class Swoole
         echo "Client #{$fd} disconnected\n";
 
         // Close backend connection if exists
-        if (isset($this->connections[$fd]['backend']) && $this->connections[$fd]['backend'] instanceof Client) {
+        if (isset($this->connections[$fd]['backend'])) {
             $this->connections[$fd]['backend']->close();
         }
 

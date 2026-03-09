@@ -184,7 +184,9 @@ class SwooleCoroutine
             $result = null;
             if ($endpoint === null) {
                 // Extract hostname from request
-                $hostname = $request->header['host'] ?? null;
+                /** @var array<string, string> $requestHeaders */
+                $requestHeaders = $request->header ?? [];
+                $hostname = $requestHeaders['host'] ?? null;
 
                 if (! $hostname) {
                     $response->status(400);
@@ -275,7 +277,9 @@ class SwooleCoroutine
             }
         } else {
             $headers = [];
-            foreach ($request->header as $key => $value) {
+            /** @var array<string, string> $requestHeaders */
+            $requestHeaders = $request->header ?? [];
+            foreach ($requestHeaders as $key => $value) {
                 $lower = strtolower($key);
                 if ($lower !== 'host' && $lower !== 'connection') {
                     $headers[$key] = $value;
@@ -284,13 +288,17 @@ class SwooleCoroutine
             $headers['Host'] = $port === 80 ? $host : "{$host}:{$port}";
             $client->setHeaders($headers);
             if (! empty($request->cookie)) {
-                $client->setCookies($request->cookie);
+                /** @var array<string, string> $cookies */
+                $cookies = $request->cookie;
+                $client->setCookies($cookies);
             }
         }
 
         // Make request
-        $method = strtoupper($request->server['request_method'] ?? 'GET');
-        $path = $request->server['request_uri'] ?? '/';
+        /** @var array<string, string> $requestServer */
+        $requestServer = $request->server ?? [];
+        $method = strtoupper($requestServer['request_method'] ?? 'GET');
+        $path = $requestServer['request_uri'] ?? '/';
         $body = '';
         if ($method !== 'GET' && $method !== 'HEAD') {
             $body = $request->getContent() ?: '';
@@ -324,14 +332,18 @@ class SwooleCoroutine
         if (! $this->config['fast_path']) {
             // Forward response headers
             if (! empty($client->headers)) {
-                foreach ($client->headers as $key => $value) {
+                /** @var array<string, string> $responseHeaders */
+                $responseHeaders = $client->headers;
+                foreach ($responseHeaders as $key => $value) {
                     $response->header($key, $value);
                 }
             }
 
             // Forward response cookies
             if (! empty($client->set_cookie_headers)) {
-                foreach ($client->set_cookie_headers as $cookie) {
+                /** @var list<string> $cookieHeaders */
+                $cookieHeaders = $client->set_cookie_headers;
+                foreach ($cookieHeaders as $cookie) {
                     $response->header('Set-Cookie', $cookie);
                 }
             }
@@ -377,7 +389,9 @@ class SwooleCoroutine
      */
     protected function forwardRawRequest(Request $request, Response $response, string $endpoint, ?array $telemetryData = null): void
     {
-        $method = strtoupper($request->server['request_method'] ?? 'GET');
+        /** @var array<string, string> $requestServer */
+        $requestServer = $request->server ?? [];
+        $method = strtoupper($requestServer['request_method'] ?? 'GET');
         if ($method !== 'GET' && $method !== 'HEAD') {
             $this->forwardRequest($request, $response, $endpoint, $telemetryData);
 
@@ -407,7 +421,7 @@ class SwooleCoroutine
             }
         }
 
-        $path = $request->server['request_uri'] ?? '/';
+        $path = $requestServer['request_uri'] ?? '/';
         $hostHeader = $port === 80 ? $host : "{$host}:{$port}";
         $requestLine = $method.' '.$path." HTTP/1.1\r\n".
             'Host: '.$hostHeader."\r\n".
@@ -423,6 +437,7 @@ class SwooleCoroutine
 
         $buffer = '';
         while (strpos($buffer, "\r\n\r\n") === false) {
+            /** @var string|false $chunk */
             $chunk = $client->recv(8192);
             if ($chunk === '' || $chunk === false) {
                 $client->close();
@@ -544,7 +559,6 @@ class SwooleCoroutine
             return;
         }
 
-        /** @phpstan-ignore-next-line */
         \Swoole\Coroutine\run(function (): void {
             $this->onStart();
             $this->onWorkerStart(0);
