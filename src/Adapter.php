@@ -32,6 +32,9 @@ abstract class Adapter
     /** @var array<string, int> Last activity timestamp per resource */
     protected array $lastActivityUpdate = [];
 
+    /** @var array<string, array{inbound: int, outbound: int}> Byte counters per resource since last flush */
+    protected array $byteCounters = [];
+
     public function __construct(
         public Resolver $resolver {
             get {
@@ -79,6 +82,13 @@ abstract class Adapter
      */
     public function notifyClose(string $resourceId, array $metadata = []): void
     {
+        // Flush remaining bytes on disconnect
+        if (isset($this->byteCounters[$resourceId])) {
+            $metadata['inboundBytes'] = $this->byteCounters[$resourceId]['inbound'];
+            $metadata['outboundBytes'] = $this->byteCounters[$resourceId]['outbound'];
+            unset($this->byteCounters[$resourceId]);
+        }
+
         $this->resolver->onDisconnect($resourceId, $metadata);
         unset($this->lastActivityUpdate[$resourceId]);
     }
@@ -88,6 +98,19 @@ abstract class Adapter
      *
      * @param  array<string, mixed>  $metadata  Activity metadata
      */
+    /**
+     * Record bytes transferred for a resource
+     */
+    public function recordBytes(string $resourceId, int $inbound = 0, int $outbound = 0): void
+    {
+        if (!isset($this->byteCounters[$resourceId])) {
+            $this->byteCounters[$resourceId] = ['inbound' => 0, 'outbound' => 0];
+        }
+
+        $this->byteCounters[$resourceId]['inbound'] += $inbound;
+        $this->byteCounters[$resourceId]['outbound'] += $outbound;
+    }
+
     public function trackActivity(string $resourceId, array $metadata = []): void
     {
         $now = time();
@@ -98,6 +121,14 @@ abstract class Adapter
         }
 
         $this->lastActivityUpdate[$resourceId] = $now;
+
+        // Flush accumulated byte counters into the activity metadata
+        if (isset($this->byteCounters[$resourceId])) {
+            $metadata['inboundBytes'] = $this->byteCounters[$resourceId]['inbound'];
+            $metadata['outboundBytes'] = $this->byteCounters[$resourceId]['outbound'];
+            $this->byteCounters[$resourceId] = ['inbound' => 0, 'outbound' => 0];
+        }
+
         $this->resolver->trackActivity($resourceId, $metadata);
     }
 

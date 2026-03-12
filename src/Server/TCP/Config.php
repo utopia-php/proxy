@@ -11,7 +11,7 @@ class Config
      */
     public function __construct(
         public readonly string $host = '0.0.0.0',
-        public readonly array $ports = [5432, 3306],
+        public readonly array $ports = [5432, 3306, 27017],
         public readonly int $workers = 16,
         public readonly int $maxConnections = 200_000,
         public readonly int $maxCoroutine = 200_000,
@@ -32,7 +32,29 @@ class Config
         public readonly int $recvBufferSize = 131072,
         public readonly float $backendConnectTimeout = 5.0,
         public readonly bool $skipValidation = false,
+        public readonly bool $readWriteSplit = false,
+        public readonly ?TLS $tls = null,
     ) {
         $this->reactorNum = $reactorNum ?? swoole_cpu_num() * 2;
+    }
+
+    /**
+     * Check if TLS termination is enabled
+     */
+    public function isTlsEnabled(): bool
+    {
+        return $this->tls !== null;
+    }
+
+    /**
+     * Get the TLS context builder, or null if TLS is not configured
+     */
+    public function getTlsContext(): ?TlsContext
+    {
+        if ($this->tls === null) {
+            return null;
+        }
+
+        return new TlsContext($this->tls);
     }
 }

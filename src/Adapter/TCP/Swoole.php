@@ -4,17 +4,28 @@ namespace Utopia\Proxy\Adapter\TCP;
 
 use Swoole\Coroutine\Client;
 use Utopia\Proxy\Adapter;
+use Utopia\Proxy\ConnectionResult;
+use Utopia\Proxy\QueryParser;
 use Utopia\Proxy\Resolver;
+use Utopia\Proxy\Resolver\Exception as ResolverException;
+use Utopia\Proxy\Resolver\ReadWriteResolver;
 
 /**
  * TCP Protocol Adapter (Swoole Implementation)
  *
  * Routes TCP connections (PostgreSQL, MySQL) based on database hostname/SNI.
+ * Supports optional read/write split routing via QueryParser and ReadWriteResolver.
  *
  * Routing:
  * - Input: Database hostname extracted from SNI or startup message
  * - Resolution: Provided by Resolver implementation
  * - Output: Backend endpoint (IP:port)
+ *
+ * Read/Write Split:
+ * - When enabled, inspects each query packet to determine read vs write
+ * - Read queries route to replicas via resolveRead()
+ * - Write queries and transactions pin to primary via resolveWrite()
+ * - Transaction state tracked per-connection (BEGIN pins, COMMIT/ROLLBACK unpins)
  *
  * Performance (validated on 8-core/32GB):
  * - 670k+ concurrent connections
@@ -26,6 +37,7 @@ use Utopia\Proxy\Resolver;
  * ```php
  * $resolver = new MyDatabaseResolver();
  * $adapter = new TCP($resolver, port: 5432);
+ * $adapter->setReadWriteSplit(true); // Enable read/write routing
  * ```
  */
 class Swoole extends Adapter
@@ -35,6 +47,20 @@ class Swoole extends Adapter
 
     /** @var float Backend connection timeout in seconds */
     protected float $connectTimeout = 5.0;
+
+    /** @var bool Whether read/write split routing is enabled */
+    protected bool $readWriteSplit = false;
+
+    /** @var QueryParser|null Lazy-initialized query parser */
+    protected ?QueryParser $queryParser = null;
+
+    /**
+     * Per-connection transaction pinning state.
+     * When a connection is in a transaction, all queries are routed to primary.
+     *
+     * @var array<int, bool>
+     */
+    protected array $pinnedConnections = [];
 
     public function __construct(
         Resolver $resolver,
@@ -58,6 +84,37 @@ class Swoole extends Adapter
     }
 
     /**
+     * Enable or disable read/write split routing
+     *
+     * When enabled, the adapter inspects each data packet to classify queries
+     * and route reads to replicas and writes to the primary.
+     * Requires the resolver to implement ReadWriteResolver for full functionality.
+     * Falls back to normal resolve() if the resolver does not implement it.
+     */
+    public function setReadWriteSplit(bool $enabled): static
+    {
+        $this->readWriteSplit = $enabled;
+
+        return $this;
+    }
+
+    /**
+     * Check if read/write split is enabled
+     */
+    public function isReadWriteSplit(): bool
+    {
+        return $this->readWriteSplit;
+    }
+
+    /**
+     * Check if a connection is pinned to primary (in a transaction)
+     */
+    public function isConnectionPinned(int $clientFd): bool
+    {
+        return $this->pinnedConnections[$clientFd] ?? false;
+    }
+
+    /**
      * Get adapter name
      */
     public function getName(): string
@@ -70,7 +127,11 @@ class Swoole extends Adapter
      */
     public function getProtocol(): string
     {
-        return $this->port === 5432 ? 'postgresql' : 'mysql';
+        return match ($this->port) {
+            5432 => 'postgresql',
+            27017 => 'mongodb',
+            default => 'mysql',
+        };
     }
 
     /**
@@ -78,7 +139,7 @@ class Swoole extends Adapter
      */
     public function getDescription(): string
     {
-        return 'TCP proxy adapter for database connections (PostgreSQL, MySQL)';
+        return 'TCP proxy adapter for database connections (PostgreSQL, MySQL, MongoDB)';
     }
 
     /**
@@ -91,11 +152,100 @@ class Swoole extends Adapter
      */
     public function parseDatabaseId(string $data, int $fd): string
     {
-        if ($this->port === 5432) {
-            return $this->parsePostgreSQLDatabaseId($data);
-        } else {
-            return $this->parseMySQLDatabaseId($data);
+        return match ($this->getProtocol()) {
+            'postgresql' => $this->parsePostgreSQLDatabaseId($data),
+            'mongodb' => $this->parseMongoDatabaseId($data),
+            default => $this->parseMySQLDatabaseId($data),
+        };
+    }
+
+    /**
+     * Classify a data packet for read/write routing
+     *
+     * Determines whether a query packet should be routed to a read replica
+     * or the primary writer. Handles transaction pinning automatically.
+     *
+     * @param  string  $data  Raw protocol data packet
+     * @param  int  $clientFd  Client file descriptor for transaction tracking
+     * @return string QueryParser::READ or QueryParser::WRITE
+     */
+    public function classifyQuery(string $data, int $clientFd): string
+    {
+        if (!$this->readWriteSplit) {
+            return QueryParser::WRITE;
         }
+
+        // If connection is pinned to primary (in transaction), everything goes to primary
+        if ($this->isConnectionPinned($clientFd)) {
+            $classification = $this->getQueryParser()->parse($data, $this->getProtocol());
+
+            // Check for transaction end to unpin
+            if ($classification === QueryParser::TRANSACTION) {
+                $query = $this->extractQueryText($data);
+                $keyword = $this->getQueryParser()->extractKeyword($query);
+
+                if ($keyword === 'COMMIT' || $keyword === 'ROLLBACK') {
+                    unset($this->pinnedConnections[$clientFd]);
+                }
+            }
+
+            return QueryParser::WRITE;
+        }
+
+        $classification = $this->getQueryParser()->parse($data, $this->getProtocol());
+
+        // Transaction commands pin to primary
+        if ($classification === QueryParser::TRANSACTION) {
+            $query = $this->extractQueryText($data);
+            $keyword = $this->getQueryParser()->extractKeyword($query);
+
+            // BEGIN/START pin to primary
+            if ($keyword === 'BEGIN' || $keyword === 'START') {
+                $this->pinnedConnections[$clientFd] = true;
+            }
+
+            return QueryParser::WRITE;
+        }
+
+        // UNKNOWN goes to primary for safety
+        if ($classification === QueryParser::UNKNOWN) {
+            return QueryParser::WRITE;
+        }
+
+        return $classification;
+    }
+
+    /**
+     * Route a query to the appropriate backend (read replica or primary)
+     *
+     * @param  string  $resourceId  Database/resource identifier
+     * @param  string  $queryType  QueryParser::READ or QueryParser::WRITE
+     * @return ConnectionResult Resolved backend endpoint
+     *
+     * @throws ResolverException
+     */
+    public function routeQuery(string $resourceId, string $queryType): ConnectionResult
+    {
+        // If read/write split is disabled or resolver doesn't support it, use default routing
+        if (!$this->readWriteSplit || !($this->resolver instanceof ReadWriteResolver)) {
+            return $this->route($resourceId);
+        }
+
+        if ($queryType === QueryParser::READ) {
+            return $this->routeRead($resourceId);
+        }
+
+        return $this->routeWrite($resourceId);
+    }
+
+    /**
+     * Clear transaction pinning state for a connection
+     *
+     * Should be called when a client disconnects to clean up state.
+     */
+    public function clearConnectionState(int $clientFd): void
+    {
+        unset($this->pinnedConnections[$clientFd]);
     }
 
     /**
@@ -206,6 +356,72 @@ class Swoole extends Adapter
     }
 
     /**
+     * Parse MongoDB database ID from OP_MSG
+     *
+     * MongoDB OP_MSG contains a BSON document with a "$db" field holding the database name.
+     * We search for the "$db\0" marker and extract the following BSON string value.
+     *
+     * @throws \Exception
+     */
+    protected function parseMongoDatabaseId(string $data): string
+    {
+        // MongoDB OP_MSG: header (16 bytes) + flagBits (4 bytes) + section kind (1 byte) + BSON document
+        // The BSON document contains a "$db" field with the database name
+        // Look for the "$db\0" marker in the data
+        $marker = "\$db\0";
+        $pos = \strpos($data, $marker);
+
+        if ($pos === false) {
+            throw new \Exception('Invalid MongoDB database name');
+        }
+
+        // After "$db\0" comes the BSON type byte (0x02 = string), then:
+        // 4 bytes little-endian string length, then the null-terminated string
+        $offset = $pos + \strlen($marker);
+
+        if ($offset + 4 >= \strlen($data)) {
+            throw new \Exception('Invalid MongoDB database name');
+        }
+
+        $strLen = \unpack('V', \substr($data, $offset, 4))[1];
+        $offset += 4;
+
+        if ($offset + $strLen > \strlen($data)) {
+            throw new \Exception('Invalid MongoDB database name');
+        }
+
+        $dbName = \substr($data, $offset, $strLen - 1); // -1 for null terminator
+
+        if (\strncmp($dbName, 'db-', 3) !== 0) {
+            throw new \Exception('Invalid MongoDB database name');
+        }
+
+        // Extract ID (alphanumeric after "db-", stop at dot or end)
+        $idStart = 3;
+        $nameLen = \strlen($dbName);
+        $idEnd = $idStart;
+
+        while ($idEnd < $nameLen) {
+            $c = $dbName[$idEnd];
+            if ($c === '.') {
+                break;
+            }
+            // Allow a-z, A-Z, 0-9
+            if (($c >= 'a' && $c <= 'z') || ($c >= 'A' && $c <= 'Z') || ($c >= '0' && $c <= '9')) {
+                $idEnd++;
+            } else {
+                throw new \Exception('Invalid MongoDB database name');
+            }
+        }
+
+        if ($idEnd === $idStart) {
+            throw new \Exception('Invalid MongoDB database name');
+        }
+
+        return \substr($dbName, $idStart, $idEnd - $idStart);
+    }
+
+    /**
      * Get or create backend connection
      *
      * Performance: Reuses connections for same database
@@ -257,6 +473,119 @@ class Swoole extends Adapter
         if (isset($this->backendConnections[$cacheKey])) {
             $this->backendConnections[$cacheKey]->close();
             unset($this->backendConnections[$cacheKey]);
+        }
+    }
+
+    /**
+     * Get or create the query parser instance (lazy initialization)
+     */
+    protected function getQueryParser(): QueryParser
+    {
+        if ($this->queryParser === null) {
+            $this->queryParser = new QueryParser();
+        }
+
+        return $this->queryParser;
+    }
+
+    /**
+     * Extract raw query text from a protocol packet
+     *
+     * @param  string  $data  Raw protocol message bytes
+     * @return string SQL query text
+     */
+    protected function extractQueryText(string $data): string
+    {
+        if ($this->getProtocol() === QueryParser::PROTOCOL_POSTGRESQL) {
+            if (\strlen($data) < 6 || $data[0] !== 'Q') {
+                return '';
+            }
+            $query = \substr($data, 5);
+            $nullPos = \strpos($query, "\x00");
+            if ($nullPos !== false) {
+                $query = \substr($query, 0, $nullPos);
+            }
+
+            return $query;
+        }
+
+        // MySQL
+        if (\strlen($data) < 5 || \ord($data[4]) !== 0x03) {
+            return '';
+        }
+
+        return \substr($data, 5);
+    }
+
+    /**
+     * Route to a read replica backend
+     *
+     * @throws ResolverException
+     */
+    protected function routeRead(string $resourceId): ConnectionResult
+    {
+        /** @var ReadWriteResolver $resolver */
+        $resolver = $this->resolver;
+
+        try {
+            $result = $resolver->resolveRead($resourceId);
+            $endpoint = $result->endpoint;
+
+            if (empty($endpoint)) {
+                throw new ResolverException(
+                    "Resolver returned empty read endpoint for: {$resourceId}",
+                    ResolverException::NOT_FOUND
+                );
+            }
+
+            if (!$this->skipValidation) {
+                $this->validateEndpoint($endpoint);
+            }
+
+            return new ConnectionResult(
+                endpoint: $endpoint,
+                protocol: $this->getProtocol(),
+                metadata: \array_merge(['cached' => false, 'route' => 'read'], $result->metadata)
+            );
+        } catch (\Exception $e) {
+            $this->stats['routing_errors']++;
+            throw $e;
+        }
+    }
+
+    /**
+     * Route to the primary/writer backend
+     *
+     * @throws ResolverException
+     */
+    protected function routeWrite(string $resourceId): ConnectionResult
+    {
+        /** @var ReadWriteResolver $resolver */
+        $resolver = $this->resolver;
+
+        try {
+            $result = $resolver->resolveWrite($resourceId);
+            $endpoint = $result->endpoint;
+
+            if (empty($endpoint)) {
+                throw new ResolverException(
+                    "Resolver returned empty write endpoint for: {$resourceId}",
+                    ResolverException::NOT_FOUND
+                );
+            }
+
+            if (!$this->skipValidation) {
+                $this->validateEndpoint($endpoint);
+            }
+
+            return new ConnectionResult(
+                endpoint: $endpoint,
+                protocol: $this->getProtocol(),
+                metadata: \array_merge(['cached' => false, 'route' => 'write'], $result->metadata)
+            );
+        } catch (\Exception $e) {
+            $this->stats['routing_errors']++;
+            throw $e;
         }
     }
 }

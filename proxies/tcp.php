@@ -4,9 +4,10 @@ require __DIR__.'/../vendor/autoload.php';
 
 use Utopia\Proxy\Resolver;
 use Utopia\Proxy\Resolver\Result;
+use Utopia\Proxy\Server\TCP\Config as TCPConfig;
 use Utopia\Proxy\Server\TCP\Swoole as TCPServer;
 use Utopia\Proxy\Server\TCP\SwooleCoroutine as TCPCoroutineServer;
-use Utopia\Proxy\Server\TCP\Config as TCPConfig;
+use Utopia\Proxy\Server\TCP\TLS;
 
 /**
  * TCP Proxy Server Example (PostgreSQL + MySQL)
@@ -21,6 +22,13 @@ use Utopia\Proxy\Server\TCP\Config as TCPConfig;
  *
  * Test MySQL:
  *   mysql -h localhost -P 3306 -u root -D db-abc123
+ *
+ * TLS environment variables:
+ *   PROXY_TLS_ENABLED=true             Enable TLS termination
+ *   PROXY_TLS_CERT=/certs/server.crt   Path to TLS certificate
+ *   PROXY_TLS_KEY=/certs/server.key    Path to TLS private key
+ *   PROXY_TLS_CA=/certs/ca.crt         Path to CA certificate (for mTLS)
+ *   PROXY_TLS_REQUIRE_CLIENT_CERT=true Require client certificates (mTLS)
  */
 $serverImpl = strtolower(getenv('TCP_SERVER_IMPL') ?: 'swoole');
 if (! in_array($serverImpl, ['swoole', 'coroutine', 'coro'], true)) {
@@ -36,12 +44,40 @@ $envInt = static function (string $key, int $default): int {
     return $value === false ? $default : (int) $value;
 };
 
+$envBool = static function (string $key, bool $default): bool {
+    $value = getenv($key);
+
+    return $value === false ? $default : filter_var($value, FILTER_VALIDATE_BOOLEAN);
+};
+
 $workers = $envInt('TCP_WORKERS', swoole_cpu_num() * 2);
 $reactorNum = $envInt('TCP_REACTOR_NUM', swoole_cpu_num() * 2);
 $dispatchMode = $envInt('TCP_DISPATCH_MODE', 2);
 
 $backendEndpoint = getenv('TCP_BACKEND_ENDPOINT') ?: 'tcp-backend:15432';
-$skipValidation = filter_var(getenv('TCP_SKIP_VALIDATION') ?: 'false', FILTER_VALIDATE_BOOLEAN);
+$skipValidation = $envBool('TCP_SKIP_VALIDATION', false);
+
+// TLS configuration from environment variables
+$tlsEnabled = $envBool('PROXY_TLS_ENABLED', false);
+$tlsCert = getenv('PROXY_TLS_CERT') ?: '';
+$tlsKey = getenv('PROXY_TLS_KEY') ?: '';
+$tlsCa = getenv('PROXY_TLS_CA') ?: '';
+$tlsRequireClientCert = $envBool('PROXY_TLS_REQUIRE_CLIENT_CERT', false);
+
+$tls = null;
+if ($tlsEnabled) {
+    if ($tlsCert === '' || $tlsKey === '') {
+        echo "ERROR: PROXY_TLS_ENABLED=true but PROXY_TLS_CERT and PROXY_TLS_KEY are required\n";
+        exit(1);
+    }
+
+    $tls = new TLS(
+        certPath: $tlsCert,
+        keyPath: $tlsKey,
+        caPath: $tlsCa,
+        requireClientCert: $tlsRequireClientCert,
+    );
+}
 
 // Create a simple resolver that returns the configured backend endpoint
 $resolver = new class ($backendEndpoint) implements Resolver {
@@ -90,6 +126,7 @@ $config = new TCPConfig(
     reactorNum: $reactorNum,
     dispatchMode: $dispatchMode,
     skipValidation: $skipValidation,
+    tls: $tls,
 );
 
 echo "Starting TCP Proxy Server...\n";
@@ -98,6 +135,12 @@ echo 'Ports: '.implode(', ', $config->ports)."\n";
 echo "Workers: {$config->workers}\n";
 echo "Max connections: {$config->maxConnections}\n";
 echo "Server impl: {$serverImpl}\n";
+if ($tls !== null) {
+    echo "TLS: enabled (cert: {$tls->certPath})\n";
+    if ($tls->isMutualTLS()) {
+        echo "mTLS: enabled (ca: {$tls->caPath})\n";
+    }
+}
 echo "\n";
 
 $serverClass = $serverImpl === 'swoole' ? TCPServer::class : TCPCoroutineServer::class;
