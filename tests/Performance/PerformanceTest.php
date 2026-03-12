@@ -38,7 +38,6 @@ final class PerformanceTest extends TestCase
 {
     private string $host;
     private int $port;
-    private int $mysqlPort;
     private int $iterations;
     private int $warmupIterations;
     private string $databaseId;
@@ -98,7 +97,6 @@ final class PerformanceTest extends TestCase
 
         $this->host = getenv('PERF_PROXY_HOST') ?: '127.0.0.1';
         $this->port = (int) (getenv('PERF_PROXY_PORT') ?: 5432);
-        $this->mysqlPort = (int) (getenv('PERF_PROXY_MYSQL_PORT') ?: 3306);
         $this->iterations = (int) (getenv('PERF_ITERATIONS') ?: 1000);
         $this->warmupIterations = (int) (getenv('PERF_WARMUP_ITERATIONS') ?: 100);
         $this->databaseId = getenv('PERF_DATABASE_ID') ?: 'test-db';
@@ -484,7 +482,10 @@ final class PerformanceTest extends TestCase
         // Verify we can still connect after closing some connections
         $closedCount = min(100, count($sockets));
         for ($i = 0; $i < $closedCount; $i++) {
-            fclose(array_pop($sockets));
+            $sock = array_pop($sockets);
+            if ($sock !== null) {
+                fclose($sock);
+            }
         }
 
         // Small delay for the proxy to process disconnections

@@ -136,6 +136,7 @@ class SwooleCoroutine
 
     protected function handleConnection(Connection $connection, int $port): void
     {
+        /** @var \Swoole\Coroutine\Socket $clientSocket */
         $clientSocket = $connection->exportSocket();
         $clientId = spl_object_id($connection);
         $adapter = $this->adapters[$port];
@@ -146,6 +147,7 @@ class SwooleCoroutine
         }
 
         // Wait for first packet to establish backend connection
+        /** @var string|false $data */
         $data = $clientSocket->recv($bufferSize);
         if ($data === false || $data === '') {
             $clientSocket->close();
@@ -163,6 +165,7 @@ class SwooleCoroutine
 
             // The TLS handshake is handled by Swoole at the transport layer.
             // Read the real startup message that follows.
+            /** @var string|false $data */
             $data = $clientSocket->recv($bufferSize);
             if ($data === false || $data === '') {
                 $clientSocket->close();
@@ -174,6 +177,7 @@ class SwooleCoroutine
         try {
             $databaseId = $adapter->parseDatabaseId($data, $clientId);
             $backendClient = $adapter->getBackendConnection($databaseId, $clientId);
+            /** @var \Swoole\Coroutine\Socket $backendSocket */
             $backendSocket = $backendClient->exportSocket();
 
             // Notify connect
@@ -182,6 +186,7 @@ class SwooleCoroutine
             // Start backend -> client forwarding in separate coroutine
             Coroutine::create(function () use ($clientSocket, $backendSocket, $bufferSize, $adapter, $databaseId): void {
                 while (true) {
+                    /** @var string|false $data */
                     $data = $backendSocket->recv($bufferSize);
                     if ($data === false || $data === '') {
                         break;
@@ -206,6 +211,7 @@ class SwooleCoroutine
 
         // Client -> backend forwarding in current coroutine
         while (true) {
+            /** @var string|false $data */
             $data = $clientSocket->recv($bufferSize);
             if ($data === false || $data === '') {
                 break;

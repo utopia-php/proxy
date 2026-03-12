@@ -382,7 +382,12 @@ class TCP extends Adapter
             throw new \Exception('Invalid MongoDB database name');
         }
 
-        $strLen = \unpack('V', \substr($data, $offset, 4))[1];
+        $unpacked = \unpack('V', \substr($data, $offset, 4));
+        if ($unpacked === false) {
+            throw new \Exception('Invalid MongoDB database name');
+        }
+        /** @var int $strLen */
+        $strLen = $unpacked[1];
         $offset += 4;
 
         if ($offset + $strLen > \strlen($data)) {

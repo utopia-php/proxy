@@ -6,11 +6,11 @@ use PHPUnit\Framework\TestCase;
 use Utopia\Proxy\Adapter\TCP as TCPAdapter;
 use Utopia\Proxy\ConnectionResult;
 use Utopia\Proxy\Protocol;
-use Utopia\Query\Type as QueryType;
 use Utopia\Proxy\Resolver;
 use Utopia\Proxy\Resolver\Exception as ResolverException;
 use Utopia\Proxy\Resolver\ReadWriteResolver;
 use Utopia\Proxy\Resolver\Result;
+use Utopia\Query\Type as QueryType;
 
 /**
  * Integration test for the protocol-proxy's ability to resolve database
@@ -644,6 +644,7 @@ class EdgeIntegrationTest extends TestCase
         $this->assertGreaterThan(0.0, $stats['cacheHitRate']);
         $this->assertSame(0, $stats['routingErrors']);
 
+        /** @var array<string, mixed> $resolverStats */
         $resolverStats = $stats['resolver'];
         $this->assertSame(1, $resolverStats['connects']);
         $this->assertSame(1, $resolverStats['disconnects']);

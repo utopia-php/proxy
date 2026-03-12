@@ -6,9 +6,9 @@ use Swoole\Coroutine;
 use Swoole\Coroutine\Client;
 use Swoole\Server;
 use Utopia\Proxy\Adapter\TCP as TCPAdapter;
-use Utopia\Query\Type as QueryType;
 use Utopia\Proxy\Resolver;
 use Utopia\Proxy\Resolver\ReadWriteResolver;
+use Utopia\Query\Type as QueryType;
 
 /**
  * High-performance TCP proxy server (Swoole Implementation)
@@ -352,6 +352,7 @@ class Swoole
     protected function startForwarding(Server $server, int $clientFd, Client $backendClient): void
     {
         $bufferSize = $this->config->recvBufferSize;
+        /** @var \Swoole\Coroutine\Socket $backendSocket */
         $backendSocket = $backendClient->exportSocket();
 
         $databaseId = $this->clientDatabaseIds[$clientFd] ?? null;
@@ -360,6 +361,7 @@ class Swoole
 
         Coroutine::create(function () use ($server, $clientFd, $backendSocket, $bufferSize, $databaseId, $adapter) {
             while ($server->exist($clientFd)) {
+                /** @var string|false $data */
                 $data = $backendSocket->recv($bufferSize);
                 if ($data === false || $data === '') {
                     break;

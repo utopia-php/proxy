@@ -117,6 +117,9 @@ class Adapter
         $this->byteCounters[$resourceId]['outbound'] += $outbound;
     }
 
+    /**
+     * @param  array<string, mixed>  $metadata  Activity metadata
+     */
     public function track(string $resourceId, array $metadata = []): void
     {
         $now = time();
