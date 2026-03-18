@@ -25,7 +25,7 @@ proxy_fast_assume_ok=${COMPARE_FAST_ASSUME_OK:-true}
 proxy_server_mode=${COMPARE_SERVER_MODE:-base}
 
 cleanup() {
-  pkill -f "proxies/http.php" >/dev/null 2>&1 || true
+  pkill -f "examples/http.php" >/dev/null 2>&1 || true
   pkill -f "php benchmarks/http-backend.php" >/dev/null 2>&1 || true
 }
 trap cleanup EXIT
@@ -51,7 +51,7 @@ start_backend() {
 
 start_proxy() {
   local impl="$1"
-  pkill -f "proxies/http.php" >/dev/null 2>&1 || true
+  pkill -f "examples/http.php" >/dev/null 2>&1 || true
   nohup env \
     HTTP_SERVER_IMPL="${impl}" \
     HTTP_BACKEND_ENDPOINT="${backend_host}:${backend_port}" \
@@ -64,7 +64,7 @@ start_proxy() {
     HTTP_BACKEND_POOL_SIZE="${proxy_pool}" \
     HTTP_KEEPALIVE_TIMEOUT="${proxy_keepalive}" \
     HTTP_OPEN_HTTP2="${proxy_http2}" \
-    php -d memory_limit=1G proxies/http.php > /tmp/http-proxy.log 2>&1 &
+    php -d memory_limit=1G examples/http.php > /tmp/http-proxy.log 2>&1 &
 
   for _ in {1..20}; do
     if curl -s -o /dev/null -w "%{http_code}" "http://${host}:${port}/" | grep -q "200"; then

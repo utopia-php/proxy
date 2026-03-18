@@ -2,7 +2,7 @@ services:
 
   mariadb:
     image: mariadb:11.2
-    container_name: protocol-proxy-mariadb
+    container_name: proxy-mariadb
     restart: unless-stopped
     environment:
       MYSQL_ROOT_PASSWORD: rootpassword
@@ -14,7 +14,7 @@ services:
     volumes:
       - mariadb_data:/var/lib/mysql
     networks:
-      - protocol-proxy
+      - proxy
     healthcheck:
       test: ["CMD", "healthcheck.sh", "--connect", "--innodb_initialized"]
       interval: 10s
@@ -23,14 +23,14 @@ services:
 
   redis:
     image: redis:7-alpine
-    container_name: protocol-proxy-redis
+    container_name: proxy-redis
     restart: unless-stopped
     ports:
       - "${REDIS_PORT:-6379}:6379"
     volumes:
       - redis_data:/data
     networks:
-      - protocol-proxy
+      - proxy
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 10s
@@ -39,7 +39,7 @@ services:
 
   http-proxy:
     build: .
-    container_name: protocol-proxy-http
+    container_name: proxy-http
     restart: unless-stopped
     ports:
       - "${HTTP_PROXY_PORT:-8080}:8080"
@@ -59,12 +59,12 @@ services:
       redis:
         condition: service_healthy
     networks:
-      - protocol-proxy
-    command: php proxies/http.php
+      - proxy
+    command: php examples/http.php
 
   tcp-proxy:
     build: .
-    container_name: protocol-proxy-tcp
+    container_name: proxy-tcp
     restart: unless-stopped
     ports:
       - "${TCP_POSTGRES_PORT:-5432}:5432"
@@ -83,12 +83,12 @@ services:
       redis:
         condition: service_healthy
     networks:
-      - protocol-proxy
-    command: php proxies/tcp.php
+      - proxy
+    command: php examples/tcp.php
 
   smtp-proxy:
     build: .
-    container_name: protocol-proxy-smtp
+    container_name: proxy-smtp
     restart: unless-stopped
     ports:
       - "${SMTP_PROXY_PORT:-8025}:25"
@@ -106,11 +106,11 @@ services:
       redis:
         condition: service_healthy
     networks:
-      - protocol-proxy
-    command: php proxies/smtp.php
+      - proxy
+    command: php examples/smtp.php
 
 networks:
-  protocol-proxy:
+  proxy:
     driver: bridge
 
 volumes:

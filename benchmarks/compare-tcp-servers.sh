@@ -66,7 +66,7 @@ if [ -z "$coro_reactor" ]; then
 fi
 
 cleanup() {
-  pkill -f "proxies/tcp.php" >/dev/null 2>&1 || true
+  pkill -f "examples/tcp.php" >/dev/null 2>&1 || true
   pkill -f "php benchmarks/tcp-backend.php" >/dev/null 2>&1 || true
 }
 trap cleanup EXIT
@@ -97,7 +97,7 @@ start_backend() {
 
 start_proxy() {
   local impl="$1"
-  pkill -f "proxies/tcp.php" >/dev/null 2>&1 || true
+  pkill -f "examples/tcp.php" >/dev/null 2>&1 || true
   for _ in {1..20}; do
     if php -r '$s=@stream_socket_client("tcp://'\"${host}:${port}\"'", $errno, $errstr, 0.2); if ($s) { fclose($s); exit(0);} exit(1);' >/dev/null 2>&1; then
       sleep 0.25
@@ -116,7 +116,7 @@ start_proxy() {
         TCP_REACTOR_NUM="${coro_reactor}" \
         TCP_DISPATCH_MODE="${proxy_dispatch}" \
         TCP_SKIP_VALIDATION=true \
-        php -d memory_limit=1G proxies/tcp.php > /tmp/tcp-proxy.log 2>&1 &
+        php -d memory_limit=1G examples/tcp.php > /tmp/tcp-proxy.log 2>&1 &
     done
   else
     nohup env \
@@ -128,7 +128,7 @@ start_proxy() {
       TCP_REACTOR_NUM="${proxy_reactor}" \
       TCP_DISPATCH_MODE="${proxy_dispatch}" \
       TCP_SKIP_VALIDATION=true \
-      php -d memory_limit=1G proxies/tcp.php > /tmp/tcp-proxy.log 2>&1 &
+      php -d memory_limit=1G examples/tcp.php > /tmp/tcp-proxy.log 2>&1 &
   fi
 
   for _ in {1..20}; do

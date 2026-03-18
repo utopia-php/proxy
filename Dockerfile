@@ -37,4 +37,4 @@ COPY . .
 
 EXPOSE 8080 8081 8025
 
-CMD ["php", "proxies/http.php"]
+CMD ["php", "examples/http.php"]
