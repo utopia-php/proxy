@@ -2,8 +2,10 @@
 
 namespace Utopia\Proxy\Server\HTTP;
 
+use Swoole\Coroutine;
 use Swoole\Coroutine\Channel;
 use Swoole\Coroutine\Client as CoroutineClient;
+use Swoole\Coroutine\Http\Client as HttpClient;
 use Swoole\Coroutine\Http\Server as CoroutineServer;
 use Swoole\Http\Request;
 use Swoole\Http\Response;
@@ -185,8 +187,8 @@ class SwooleCoroutine
 
         $isNewClient = false;
         $client = $pool->pop($this->config->poolTimeout);
-        if (!$client instanceof \Swoole\Coroutine\Http\Client) {
-            $client = new \Swoole\Coroutine\Http\Client($host, $port);
+        if (!$client instanceof HttpClient) {
+            $client = new HttpClient($host, $port);
             $client->set([
                 'timeout' => $this->config->timeout,
                 'keep_alive' => $this->config->keepAlive,
@@ -456,7 +458,7 @@ class SwooleCoroutine
 
     public function start(): void
     {
-        if (\Swoole\Coroutine::getCid() > 0) {
+        if (Coroutine::getCid() > 0) {
             $this->onStart();
             $this->onWorkerStart(0);
             $this->server->start();
@@ -464,7 +466,7 @@ class SwooleCoroutine
             return;
         }
 
-        \Swoole\Coroutine\run(function (): void {
+        Coroutine\run(function (): void {
             $this->onStart();
             $this->onWorkerStart(0);
             $this->server->start();

@@ -5,6 +5,7 @@ namespace Utopia\Proxy\Server\TCP;
 use Swoole\Coroutine;
 use Swoole\Coroutine\Server as CoroutineServer;
 use Swoole\Coroutine\Server\Connection;
+use Swoole\Coroutine\Socket;
 use Utopia\Proxy\Adapter\TCP as TCPAdapter;
 use Utopia\Proxy\Resolver;
 
@@ -137,7 +138,7 @@ class SwooleCoroutine
 
     protected function handleConnection(Connection $connection, int $port): void
     {
-        /** @var \Swoole\Coroutine\Socket $clientSocket */
+        /** @var Socket $clientSocket */
         $clientSocket = $connection->exportSocket();
         $clientId = spl_object_id($connection);
         $adapter = $this->adapters[$port];
@@ -179,7 +180,7 @@ class SwooleCoroutine
 
         try {
             $backendClient = $adapter->getConnection($data, $clientId);
-            /** @var \Swoole\Coroutine\Socket $backendSocket */
+            /** @var Socket $backendSocket */
             $backendSocket = $backendClient->exportSocket();
 
             $adapter->notifyConnect($fdKey);
@@ -247,7 +248,7 @@ class SwooleCoroutine
             return;
         }
 
-        \Swoole\Coroutine\run($runner);
+        Coroutine\run($runner);
     }
 
     /**

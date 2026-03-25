@@ -4,6 +4,7 @@ namespace Utopia\Proxy\Server\TCP;
 
 use Swoole\Coroutine;
 use Swoole\Coroutine\Client;
+use Swoole\Coroutine\Socket;
 use Swoole\Server;
 use Utopia\Proxy\Adapter\TCP as TCPAdapter;
 use Utopia\Proxy\Resolver;
@@ -289,7 +290,7 @@ class Swoole
     protected function forward(Server $server, int $clientFd, Client $backendClient): void
     {
         $bufferSize = $this->config->receiveBufferSize;
-        /** @var \Swoole\Coroutine\Socket $backendSocket */
+        /** @var Socket $backendSocket */
         $backendSocket = $backendClient->exportSocket();
 
         $fdKey = (string) $clientFd;

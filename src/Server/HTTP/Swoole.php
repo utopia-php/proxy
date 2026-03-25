@@ -4,8 +4,10 @@ namespace Utopia\Proxy\Server\HTTP;
 
 use Swoole\Coroutine\Channel;
 use Swoole\Coroutine\Client as CoroutineClient;
+use Swoole\Coroutine\Http\Client as HttpClient;
 use Swoole\Http\Request;
 use Swoole\Http\Response;
+use Swoole\Http\Server;
 use Utopia\Proxy\Adapter;
 use Utopia\Proxy\Protocol;
 use Utopia\Proxy\Resolver;
@@ -22,7 +24,7 @@ use Utopia\Proxy\Resolver;
  */
 class Swoole
 {
-    protected \Swoole\Http\Server $server;
+    protected Server $server;
 
     protected Adapter $adapter;
 
@@ -36,7 +38,7 @@ class Swoole
         ?Config $config = null,
     ) {
         $this->config = $config ?? new Config();
-        $this->server = new \Swoole\Http\Server(
+        $this->server = new Server(
             $this->config->host,
             $this->config->port,
             $this->config->serverMode,
@@ -79,14 +81,14 @@ class Swoole
         $this->server->on('request', $this->onRequest(...));
     }
 
-    public function onStart(\Swoole\Http\Server $server): void
+    public function onStart(Server $server): void
     {
         echo "HTTP Proxy Server started at http://{$this->config->host}:{$this->config->port}\n";
         echo "Workers: {$this->config->workers}\n";
         echo "Max connections: {$this->config->maxConnections}\n";
     }
 
-    public function onWorkerStart(\Swoole\Http\Server $server, int $workerId): void
+    public function onWorkerStart(Server $server, int $workerId): void
     {
         $this->adapter = new Adapter($this->resolver, name: 'HTTP', protocol: Protocol::HTTP);
 
@@ -198,8 +200,8 @@ class Swoole
 
         $isNewClient = false;
         $client = $pool->pop($this->config->poolTimeout);
-        if (!$client instanceof \Swoole\Coroutine\Http\Client) {
-            $client = new \Swoole\Coroutine\Http\Client($host, $port);
+        if (!$client instanceof HttpClient) {
+            $client = new HttpClient($host, $port);
             $client->set([
                 'timeout' => $this->config->timeout,
                 'keep_alive' => $this->config->keepAlive,
