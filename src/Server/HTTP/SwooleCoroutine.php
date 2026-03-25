@@ -104,8 +104,6 @@ class SwooleCoroutine
 
     /**
      * Main request handler
-     *
-     * Performance: <1ms for cache hit
      */
     public function onRequest(Request $request, Response $response): void
     {
@@ -171,8 +169,6 @@ class SwooleCoroutine
 
     /**
      * Forward HTTP request to backend using Swoole HTTP client
-     *
-     * Performance: Zero-copy streaming for large responses
      */
     protected function forwardRequest(Request $request, Response $response, string $endpoint, ?Telemetry $telemetry = null): void
     {

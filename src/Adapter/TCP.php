@@ -16,9 +16,6 @@ use Utopia\Proxy\Resolver;
  *
  * Performance (validated on 8-core/32GB):
  * - 670k+ concurrent connections
- * - 18k connections/sec establishment rate
- * - ~33KB memory per connection
- * - Minimal-copy forwarding (128KB buffers, no payload parsing)
  *
  * Example:
  * ```php

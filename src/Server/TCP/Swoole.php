@@ -204,8 +204,6 @@ class Swoole
     /**
      * Main receive handler
      *
-     * Performance: <1ms overhead for proxying
-     *
      * When TLS is enabled, handles protocol-specific SSL negotiation:
      * - PostgreSQL: Intercepts SSLRequest, responds 'S', Swoole upgrades to TLS
      * - MySQL: Swoole handles SSL natively via SWOOLE_SSL socket type
@@ -284,9 +282,7 @@ class Swoole
     }
 
     /**
-     * Bidirectional forwarding loop - ZERO-COPY
-     *
-     * Performance: 10GB/s+ throughput
+     * Bidirectional forwarding loop
      */
     protected function forward(Server $server, int $clientFd, Client $backendClient): void
     {
@@ -298,7 +294,7 @@ class Swoole
         $port = $this->clientPorts[$clientFd] ?? null;
         $adapter = ($port !== null) ? ($this->adapters[$port] ?? null) : null;
 
-        Coroutine::create(function () use ($server, $clientFd, $backendSocket, $bufferSize, $fdKey, $adapter) {
+        \go(function () use ($server, $clientFd, $backendSocket, $bufferSize, $fdKey, $adapter) {
             while ($server->exist($clientFd)) {
                 /** @var string|false $data */
                 $data = $backendSocket->recv($bufferSize);
