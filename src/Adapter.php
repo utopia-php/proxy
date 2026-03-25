@@ -32,7 +32,7 @@ class Adapter
     /** @var array<string, int> Last activity timestamp per resource */
     protected array $lastActivity = [];
 
-    /** @var array<string, array{inbound: int, outbound: int}> Byte counters per resource since last flush */
+    /** @var array<string, Bytes> */
     protected array $bytes = [];
 
     /** @var \Closure|null Custom resolve callback, checked before the resolver */
@@ -100,10 +100,9 @@ class Adapter
      */
     public function notifyClose(string $resourceId, array $metadata = []): void
     {
-        // Flush remaining bytes on disconnect
         if (isset($this->bytes[$resourceId])) {
-            $metadata['inboundBytes'] = $this->bytes[$resourceId]['inbound'];
-            $metadata['outboundBytes'] = $this->bytes[$resourceId]['outbound'];
+            $metadata['inboundBytes'] = $this->bytes[$resourceId]->inbound;
+            $metadata['outboundBytes'] = $this->bytes[$resourceId]->outbound;
             unset($this->bytes[$resourceId]);
         }
 
@@ -120,11 +119,11 @@ class Adapter
         int $outbound = 0,
     ): void {
         if (!isset($this->bytes[$resourceId])) {
-            $this->bytes[$resourceId] = ['inbound' => 0, 'outbound' => 0];
+            $this->bytes[$resourceId] = new Bytes();
         }
 
-        $this->bytes[$resourceId]['inbound'] += $inbound;
-        $this->bytes[$resourceId]['outbound'] += $outbound;
+        $this->bytes[$resourceId]->inbound += $inbound;
+        $this->bytes[$resourceId]->outbound += $outbound;
     }
 
     /**
@@ -141,11 +140,10 @@ class Adapter
 
         $this->lastActivity[$resourceId] = $now;
 
-        // Flush accumulated byte counters into the activity metadata
         if (isset($this->bytes[$resourceId])) {
-            $metadata['inboundBytes'] = $this->bytes[$resourceId]['inbound'];
-            $metadata['outboundBytes'] = $this->bytes[$resourceId]['outbound'];
-            $this->bytes[$resourceId] = ['inbound' => 0, 'outbound' => 0];
+            $metadata['inboundBytes'] = $this->bytes[$resourceId]->inbound;
+            $metadata['outboundBytes'] = $this->bytes[$resourceId]->outbound;
+            $this->bytes[$resourceId] = new Bytes();
         }
 
         $this->resolver?->track($resourceId, $metadata);
@@ -234,7 +232,7 @@ class Adapter
                 );
             }
 
-            if (! $this->skipValidation) {
+            if (!$this->skipValidation) {
                 $this->validate($endpoint);
             }
 
@@ -274,7 +272,7 @@ class Adapter
         }
 
         $ip = \gethostbyname($host);
-        if ($ip === $host && ! \filter_var($ip, FILTER_VALIDATE_IP)) {
+        if ($ip === $host && !\filter_var($ip, FILTER_VALIDATE_IP)) {
             throw new ResolverException("Cannot resolve hostname: {$host}");
         }
 
