@@ -7,6 +7,7 @@ use Swoole\Coroutine;
 use Swoole\Coroutine\Client;
 use Swoole\Coroutine\Socket;
 use Swoole\Server;
+use Utopia\Console;
 use Utopia\Proxy\Adapter\TCP as TCPAdapter;
 use Utopia\Proxy\Resolver;
 
@@ -39,10 +40,7 @@ class Swoole
 
     protected Config $config;
 
-    protected ?TlsContext $tlsContext = null;
-
-    /** @var array<int, bool> */
-    protected array $forwarding = [];
+    protected ?TLSContext $tlsContext = null;
 
     /** @var array<int, Client> Primary/default backend connections */
     protected array $clients = [];
@@ -72,7 +70,7 @@ class Swoole
             /** @var TLS $tls */
             $tls = $this->config->tls;
             $tls->validate();
-            $this->tlsContext = $this->config->getTlsContext();
+            $this->tlsContext = $this->config->getTLSContext();
         }
 
         $socketType = $this->tlsContext !== null
@@ -148,15 +146,15 @@ class Swoole
 
     public function onStart(Server $server): void
     {
-        echo "TCP Proxy Server started at {$this->config->host}\n";
-        echo 'Ports: '.implode(', ', $this->config->ports)."\n";
-        echo "Workers: {$this->config->workers}\n";
-        echo "Max connections: {$this->config->maxConnections}\n";
+        Console::success("TCP Proxy Server started at {$this->config->host}");
+        Console::log('Ports: '.implode(', ', $this->config->ports));
+        Console::log("Workers: {$this->config->workers}");
+        Console::log("Max connections: {$this->config->maxConnections}");
 
         if ($this->config->isTlsEnabled()) {
-            echo "TLS: enabled\n";
+            Console::info('TLS: enabled');
             if ($this->config->tls?->isMutual()) {
-                echo "mTLS: enabled (client certificates required)\n";
+                Console::info('mTLS: enabled (client certificates required)');
             }
         }
     }
@@ -176,13 +174,17 @@ class Swoole
                 $adapter->setSkipValidation(true);
             }
 
+            if ($this->config->cacheTTL > 0) {
+                $adapter->setCacheTTL($this->config->cacheTTL);
+            }
+
             $adapter->setTimeout($this->config->timeout);
             $adapter->setConnectTimeout($this->config->connectTimeout);
 
             $this->adapters[$port] = $adapter;
         }
 
-        echo "Worker #{$workerId} started\n";
+        Console::log("Worker #{$workerId} started");
     }
 
     /**
@@ -197,7 +199,7 @@ class Swoole
         $this->clientPorts[$fd] = $port;
 
         if ($this->config->logConnections) {
-            echo "Client #{$fd} connected to port {$port}\n";
+            Console::log("Client #{$fd} connected to port {$port}");
         }
     }
 
@@ -210,7 +212,7 @@ class Swoole
      */
     public function onReceive(Server $server, int $fd, int $reactorId, string $data): void
     {
-        $fdKey = (string) $fd;
+        $resourceId = (string) $fd;
 
         // Fast path: existing connection - forward to appropriate backend
         if (isset($this->clients[$fd])) {
@@ -218,11 +220,13 @@ class Swoole
             $adapter = $this->adapters[$port] ?? null;
 
             if ($adapter !== null) {
-                $adapter->recordBytes($fdKey, \strlen($data), 0);
-                $adapter->track($fdKey);
+                $adapter->recordBytes($resourceId, \strlen($data), 0);
+                $adapter->track($resourceId);
             }
 
-            $this->clients[$fd]->send($data);
+            if ($this->clients[$fd]->send($data) === false) {
+                $server->close($fd);
+            }
 
             return;
         }
@@ -266,17 +270,15 @@ class Swoole
             $backendClient = $adapter->getConnection($data, $fd);
             $this->clients[$fd] = $backendClient;
 
-            $adapter->notifyConnect($fdKey);
+            $adapter->notifyConnect($resourceId);
 
             // Forward initial data to primary
             $backendClient->send($data);
 
-            // Start bidirectional forwarding from primary
-            $this->forwarding[$fd] = true;
             $this->forward($server, $fd, $backendClient);
 
         } catch (\Exception $e) {
-            echo "Error handling data from #{$fd}: {$e->getMessage()}\n";
+            Console::error("Error handling data from #{$fd}: {$e->getMessage()}");
             $server->close($fd);
         }
     }
@@ -290,11 +292,11 @@ class Swoole
         /** @var Socket $backendSocket */
         $backendSocket = $backendClient->exportSocket();
 
-        $fdKey = (string) $clientFd;
+        $resourceId = (string) $clientFd;
         $port = $this->clientPorts[$clientFd] ?? null;
         $adapter = ($port !== null) ? ($this->adapters[$port] ?? null) : null;
 
-        \go(function () use ($server, $clientFd, $backendSocket, $bufferSize, $fdKey, $adapter) {
+        \go(function () use ($server, $clientFd, $backendSocket, $bufferSize, $resourceId, $adapter) {
             while ($server->exist($clientFd)) {
                 /** @var string|false $data */
                 $data = $backendSocket->recv($bufferSize);
@@ -302,17 +304,20 @@ class Swoole
                     break;
                 }
                 if ($adapter !== null) {
-                    $adapter->recordBytes($fdKey, 0, \strlen($data));
+                    $adapter->recordBytes($resourceId, 0, \strlen($data));
                 }
-                $server->send($clientFd, $data);
+                if ($server->send($clientFd, $data) === false) {
+                    break;
+                }
             }
+            $server->close($clientFd);
         });
     }
 
     public function onClose(Server $server, int $fd, int $reactorId): void
     {
         if ($this->config->logConnections) {
-            echo "Client #{$fd} disconnected\n";
+            Console::log("Client #{$fd} disconnected");
         }
 
         if (isset($this->clients[$fd])) {
@@ -329,7 +334,6 @@ class Swoole
             }
         }
 
-        unset($this->forwarding[$fd]);
         unset($this->clientPorts[$fd]);
         unset($this->pendingTls[$fd]);
     }

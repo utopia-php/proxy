@@ -9,6 +9,7 @@ use Swoole\Coroutine\Http\Client as HttpClient;
 use Swoole\Coroutine\Http\Server as CoroutineServer;
 use Swoole\Http\Request;
 use Swoole\Http\Response;
+use Utopia\Console;
 use Utopia\Proxy\Adapter;
 use Utopia\Proxy\Protocol;
 use Utopia\Proxy\Resolver;
@@ -84,7 +85,7 @@ class SwooleCoroutine
     protected function initAdapter(): void
     {
         $this->adapter = new Adapter($this->resolver, name: 'HTTP', protocol: Protocol::HTTP);
-        $this->adapter->setCacheTtl($this->config->cacheTTL);
+        $this->adapter->setCacheTTL($this->config->cacheTTL);
 
         if ($this->config->skipValidation) {
             $this->adapter->setSkipValidation(true);
@@ -93,14 +94,18 @@ class SwooleCoroutine
 
     public function onStart(): void
     {
-        echo "HTTP Proxy Server started at http://{$this->config->host}:{$this->config->port}\n";
-        echo "Workers: {$this->config->workers}\n";
-        echo "Max connections: {$this->config->maxConnections}\n";
+        Console::success("HTTP Proxy Server started at http://{$this->config->host}:{$this->config->port}");
+        Console::log("Workers: {$this->config->workers}");
+        Console::log("Max connections: {$this->config->maxConnections}");
     }
 
     public function onWorkerStart(int $workerId = 0): void
     {
-        echo "Worker #{$workerId} started (Adapter: {$this->adapter->getName()})\n";
+        if ($this->config->workerStart !== null) {
+            ($this->config->workerStart)(null, $workerId, $this->adapter);
+        }
+
+        Console::log("Worker #{$workerId} started (Adapter: {$this->adapter->getName()})");
     }
 
     /**
@@ -108,6 +113,18 @@ class SwooleCoroutine
      */
     public function onRequest(Request $request, Response $response): void
     {
+        if ($this->config->requestHandler !== null) {
+            try {
+                ($this->config->requestHandler)($request, $response, $this->adapter);
+            } catch (\Throwable $e) {
+                Console::error("Request handler error: {$e->getMessage()}");
+                $response->status(500);
+                $response->end('Internal Server Error');
+            }
+
+            return;
+        }
+
         try {
             if ($this->config->directResponse !== null) {
                 $response->status($this->config->directResponseStatus);
@@ -157,7 +174,7 @@ class SwooleCoroutine
             }
 
         } catch (\Exception $e) {
-            error_log("Proxy error: {$e->getMessage()} in {$e->getFile()}:{$e->getLine()}");
+            Console::error("Proxy error: {$e->getMessage()} in {$e->getFile()}:{$e->getLine()}");
 
             $response->status(503);
             $response->header('Content-Type', 'application/json');
@@ -173,8 +190,7 @@ class SwooleCoroutine
      */
     protected function forwardRequest(Request $request, Response $response, string $endpoint, ?Telemetry $telemetry = null): void
     {
-        [$host, $port] = explode(':', $endpoint . ':80');
-        $port = (int) $port;
+        [$host, $port] = Adapter::parseEndpoint($endpoint, 80);
 
         $poolKey = "{$host}:{$port}";
         if (!isset($this->pools[$poolKey])) {
@@ -304,8 +320,7 @@ class SwooleCoroutine
             return;
         }
 
-        [$host, $port] = explode(':', $endpoint . ':80');
-        $port = (int) $port;
+        [$host, $port] = Adapter::parseEndpoint($endpoint, 80);
 
         $poolKey = "raw:{$host}:{$port}";
         if (!isset($this->pools[$poolKey])) {

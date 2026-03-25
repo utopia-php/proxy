@@ -4,21 +4,21 @@ namespace Utopia\Tests;
 
 use PHPUnit\Framework\TestCase;
 use Utopia\Proxy\Server\TCP\TLS;
-use Utopia\Proxy\Server\TCP\TlsContext;
+use Utopia\Proxy\Server\TCP\TLSContext;
 
-class TlsContextTest extends TestCase
+class TLSContextTest extends TestCase
 {
     protected function setUp(): void
     {
         if (!\extension_loaded('swoole')) {
-            $this->markTestSkipped('ext-swoole is required to run TlsContext tests.');
+            $this->markTestSkipped('ext-swoole is required to run TLSContext tests.');
         }
     }
 
     public function testToSwooleConfigBasic(): void
     {
         $tls = new TLS(certificate: '/certs/server.crt', key: '/certs/server.key');
-        $ctx = new TlsContext($tls);
+        $ctx = new TLSContext($tls);
 
         $config = $ctx->toSwooleConfig();
 
@@ -39,7 +39,7 @@ class TlsContextTest extends TestCase
             key: '/certs/server.key',
             ca: '/certs/ca.crt',
         );
-        $ctx = new TlsContext($tls);
+        $ctx = new TLSContext($tls);
 
         $config = $ctx->toSwooleConfig();
 
@@ -55,7 +55,7 @@ class TlsContextTest extends TestCase
             ca: '/certs/ca.crt',
             requireClientCert: true,
         );
-        $ctx = new TlsContext($tls);
+        $ctx = new TLSContext($tls);
 
         $config = $ctx->toSwooleConfig();
 
@@ -72,7 +72,7 @@ class TlsContextTest extends TestCase
             key: '/certs/server.key',
             ciphers: $customCiphers,
         );
-        $ctx = new TlsContext($tls);
+        $ctx = new TLSContext($tls);
 
         $config = $ctx->toSwooleConfig();
 
@@ -82,7 +82,7 @@ class TlsContextTest extends TestCase
     public function testToStreamContextReturnsResource(): void
     {
         $tls = new TLS(certificate: '/certs/server.crt', key: '/certs/server.key');
-        $ctx = new TlsContext($tls);
+        $ctx = new TLSContext($tls);
 
         $streamCtx = $ctx->toStreamContext();
 
@@ -92,7 +92,7 @@ class TlsContextTest extends TestCase
     public function testToStreamContextHasCorrectSslOptions(): void
     {
         $tls = new TLS(certificate: '/certs/server.crt', key: '/certs/server.key');
-        $ctx = new TlsContext($tls);
+        $ctx = new TLSContext($tls);
 
         $streamCtx = $ctx->toStreamContext();
         /** @var array<string, array<string, mixed>> $options */
@@ -116,7 +116,7 @@ class TlsContextTest extends TestCase
             key: '/certs/server.key',
             ca: '/certs/ca.crt',
         );
-        $ctx = new TlsContext($tls);
+        $ctx = new TLSContext($tls);
 
         $streamCtx = $ctx->toStreamContext();
         /** @var array<string, array<string, mixed>> $options */
@@ -135,7 +135,7 @@ class TlsContextTest extends TestCase
             ca: '/certs/ca.crt',
             requireClientCert: true,
         );
-        $ctx = new TlsContext($tls);
+        $ctx = new TLSContext($tls);
 
         $streamCtx = $ctx->toStreamContext();
         /** @var array<string, array<string, mixed>> $options */
@@ -151,7 +151,7 @@ class TlsContextTest extends TestCase
     public function testToStreamContextWithoutCaFile(): void
     {
         $tls = new TLS(certificate: '/certs/server.crt', key: '/certs/server.key');
-        $ctx = new TlsContext($tls);
+        $ctx = new TLSContext($tls);
 
         $streamCtx = $ctx->toStreamContext();
         /** @var array<string, array<string, mixed>> $options */
@@ -165,7 +165,7 @@ class TlsContextTest extends TestCase
     public function testGetSocketTypeIncludesSslFlag(): void
     {
         $tls = new TLS(certificate: '/certs/server.crt', key: '/certs/server.key');
-        $ctx = new TlsContext($tls);
+        $ctx = new TLSContext($tls);
 
         $socketType = $ctx->getSocketType();
 
@@ -175,7 +175,7 @@ class TlsContextTest extends TestCase
     public function testGetTlsReturnsOriginalInstance(): void
     {
         $tls = new TLS(certificate: '/certs/server.crt', key: '/certs/server.key');
-        $ctx = new TlsContext($tls);
+        $ctx = new TLSContext($tls);
 
         $this->assertSame($tls, $ctx->getTls());
     }

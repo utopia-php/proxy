@@ -3,9 +3,11 @@
 namespace Utopia\Proxy\Server\TCP;
 
 use Swoole\Coroutine;
+use Swoole\Coroutine\Channel;
 use Swoole\Coroutine\Server as CoroutineServer;
 use Swoole\Coroutine\Server\Connection;
 use Swoole\Coroutine\Socket;
+use Utopia\Console;
 use Utopia\Proxy\Adapter\TCP as TCPAdapter;
 use Utopia\Proxy\Resolver;
 
@@ -39,7 +41,7 @@ class SwooleCoroutine
 
     protected Config $config;
 
-    protected ?TlsContext $tlsContext = null;
+    protected ?TLSContext $tlsContext = null;
 
     public function __construct(
         Config $config,
@@ -51,7 +53,7 @@ class SwooleCoroutine
             /** @var TLS $tls */
             $tls = $this->config->tls;
             $tls->validate();
-            $this->tlsContext = $this->config->getTlsContext();
+            $this->tlsContext = $this->config->getTLSContext();
         }
 
         $this->initAdapters();
@@ -61,10 +63,19 @@ class SwooleCoroutine
     protected function initAdapters(): void
     {
         foreach ($this->config->ports as $port) {
-            $adapter = new TCPAdapter(port: $port, resolver: $this->resolver);
+            if ($this->config->adapterFactory !== null) {
+                /** @var TCPAdapter $adapter */
+                $adapter = ($this->config->adapterFactory)($port);
+            } else {
+                $adapter = new TCPAdapter(port: $port, resolver: $this->resolver);
+            }
 
             if ($this->config->skipValidation) {
                 $adapter->setSkipValidation(true);
+            }
+
+            if ($this->config->cacheTTL > 0) {
+                $adapter->setCacheTTL($this->config->cacheTTL);
             }
 
             $adapter->setTimeout($this->config->timeout);
@@ -118,22 +129,22 @@ class SwooleCoroutine
 
     public function onStart(): void
     {
-        echo "TCP Proxy Server started at {$this->config->host}\n";
-        echo 'Ports: '.implode(', ', $this->config->ports)."\n";
-        echo "Workers: {$this->config->workers}\n";
-        echo "Max connections: {$this->config->maxConnections}\n";
+        Console::success("TCP Proxy Server started at {$this->config->host}");
+        Console::log('Ports: '.implode(', ', $this->config->ports));
+        Console::log("Workers: {$this->config->workers}");
+        Console::log("Max connections: {$this->config->maxConnections}");
 
         if ($this->config->isTlsEnabled()) {
-            echo "TLS: enabled\n";
+            Console::info('TLS: enabled');
             if ($this->config->tls?->isMutual()) {
-                echo "mTLS: enabled (client certificates required)\n";
+                Console::info('mTLS: enabled (client certificates required)');
             }
         }
     }
 
     public function onWorkerStart(int $workerId = 0): void
     {
-        echo "Worker #{$workerId} started\n";
+        Console::log("Worker #{$workerId} started");
     }
 
     protected function handleConnection(Connection $connection, int $port): void
@@ -145,10 +156,9 @@ class SwooleCoroutine
         $bufferSize = $this->config->receiveBufferSize;
 
         if ($this->config->logConnections) {
-            echo "Client #{$clientId} connected to port {$port}\n";
+            Console::log("Client #{$clientId} connected to port {$port}");
         }
 
-        // Wait for first packet to establish backend connection
         /** @var string|false $data */
         $data = $clientSocket->recv($bufferSize);
         if ($data === false || $data === '') {
@@ -165,8 +175,6 @@ class SwooleCoroutine
         if ($this->tlsContext !== null && $port === 5432 && TLS::isPostgreSQLSSLRequest($data)) {
             $clientSocket->sendAll(TLS::PG_SSL_RESPONSE_OK);
 
-            // The TLS handshake is handled by Swoole at the transport layer.
-            // Read the real startup message that follows.
             /** @var string|false $data */
             $data = $clientSocket->recv($bufferSize);
             if ($data === false || $data === '') {
@@ -176,35 +184,45 @@ class SwooleCoroutine
             }
         }
 
-        $fdKey = (string) $clientId;
+        $resourceId = (string) $clientId;
+        $done = new Channel(1);
 
         try {
             $backendClient = $adapter->getConnection($data, $clientId);
-            /** @var Socket $backendSocket */
-            $backendSocket = $backendClient->exportSocket();
-
-            $adapter->notifyConnect($fdKey);
-
-            \go(function () use ($clientSocket, $backendSocket, $bufferSize, $adapter, $fdKey): void {
-                while (true) {
-                    /** @var string|false $data */
-                    $data = $backendSocket->recv($bufferSize);
-                    if ($data === false || $data === '') {
-                        break;
-                    }
-                    $adapter->recordBytes($fdKey, 0, \strlen($data));
-                    if ($clientSocket->sendAll($data) === false) {
-                        break;
-                    }
-                }
-                $clientSocket->close();
-            });
-
-            $adapter->recordBytes($fdKey, \strlen($data), 0);
-            $backendSocket->sendAll($data);
         } catch (\Exception $e) {
-            echo "Error handling data from #{$clientId}: {$e->getMessage()}\n";
+            Console::error("Error handling data from #{$clientId}: {$e->getMessage()}");
             $clientSocket->close();
+
+            return;
+        }
+
+        /** @var Socket $backendSocket */
+        $backendSocket = $backendClient->exportSocket();
+
+        $adapter->notifyConnect($resourceId);
+
+        \go(function () use ($clientSocket, $backendSocket, $bufferSize, $adapter, $resourceId, $done): void {
+            while (true) {
+                /** @var string|false $data */
+                $data = $backendSocket->recv($bufferSize);
+                if ($data === false || $data === '') {
+                    break;
+                }
+                $adapter->recordBytes($resourceId, 0, \strlen($data));
+                if ($clientSocket->sendAll($data) === false) {
+                    break;
+                }
+            }
+            $done->push(true);
+        });
+
+        $adapter->recordBytes($resourceId, \strlen($data), 0);
+        if ($backendSocket->sendAll($data) === false) {
+            $backendSocket->close();
+            $done->pop(1.0);
+            $clientSocket->close();
+            $adapter->notifyClose($resourceId);
+            $adapter->closeConnection($clientId);
 
             return;
         }
@@ -215,17 +233,22 @@ class SwooleCoroutine
             if ($data === false || $data === '') {
                 break;
             }
-            $adapter->recordBytes($fdKey, \strlen($data), 0);
-            $adapter->track($fdKey);
-            $backendSocket->sendAll($data);
+            $adapter->recordBytes($resourceId, \strlen($data), 0);
+            $adapter->track($resourceId);
+            if ($backendSocket->sendAll($data) === false) {
+                break;
+            }
         }
 
-        $adapter->notifyClose($fdKey);
         $backendSocket->close();
+        $done->pop();
+        $clientSocket->close();
+
+        $adapter->notifyClose($resourceId);
         $adapter->closeConnection($clientId);
 
         if ($this->config->logConnections) {
-            echo "Client #{$clientId} disconnected\n";
+            Console::log("Client #{$clientId} disconnected");
         }
     }
 

@@ -15,7 +15,7 @@ namespace Utopia\Proxy\Server\TCP;
  * Example:
  * ```php
  * $tls = new TLS(certificate: '/certs/server.crt', key: '/certs/server.key');
- * $ctx = new TlsContext($tls);
+ * $ctx = new TLSContext($tls);
  *
  * // For Swoole Server::set()
  * $server->set($ctx->toSwooleConfig());
@@ -24,7 +24,7 @@ namespace Utopia\Proxy\Server\TCP;
  * $streamCtx = $ctx->toStreamContext();
  * ```
  */
-class TlsContext
+class TLSContext
 {
     public function __construct(
         protected TLS $tls,

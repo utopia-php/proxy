@@ -26,7 +26,7 @@ class Config
         public readonly bool $parseFiles = false,
         public readonly bool $compression = false,
         public readonly int $logLevel = SWOOLE_LOG_ERROR,
-        public readonly int $timeout = 30,
+        public readonly float $timeout = 30.0,
         public readonly float $connectTimeout = 5.0,
         public readonly bool $keepAlive = true,
         public readonly int $poolSize = 1024,

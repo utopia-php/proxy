@@ -5,7 +5,7 @@ namespace Utopia\Tests;
 use PHPUnit\Framework\TestCase;
 use Utopia\Proxy\Server\TCP\Config;
 use Utopia\Proxy\Server\TCP\TLS;
-use Utopia\Proxy\Server\TCP\TlsContext;
+use Utopia\Proxy\Server\TCP\TLSContext;
 
 class ConfigTest extends TestCase
 {
@@ -194,29 +194,29 @@ class ConfigTest extends TestCase
         $this->assertTrue($config->isTlsEnabled());
     }
 
-    public function testGetTlsContextNullByDefault(): void
+    public function testGetTLSContextNullByDefault(): void
     {
         $config = new Config(ports: [5432]);
-        $this->assertNull($config->getTlsContext());
+        $this->assertNull($config->getTLSContext());
     }
 
-    public function testGetTlsContextReturnsInstanceWhenConfigured(): void
+    public function testGetTLSContextReturnsInstanceWhenConfigured(): void
     {
         $tls = new TLS(certificate: '/certs/server.crt', key: '/certs/server.key');
         $config = new Config(ports: [5432], tls: $tls);
 
-        $context = $config->getTlsContext();
-        $this->assertInstanceOf(TlsContext::class, $context);
+        $context = $config->getTLSContext();
+        $this->assertInstanceOf(TLSContext::class, $context);
         $this->assertSame($tls, $context->getTls());
     }
 
-    public function testGetTlsContextReturnsNewInstanceEachCall(): void
+    public function testGetTLSContextReturnsNewInstanceEachCall(): void
     {
         $tls = new TLS(certificate: '/certs/server.crt', key: '/certs/server.key');
         $config = new Config(ports: [5432], tls: $tls);
 
-        $context1 = $config->getTlsContext();
-        $context2 = $config->getTlsContext();
+        $context1 = $config->getTLSContext();
+        $context2 = $config->getTLSContext();
         $this->assertNotSame($context1, $context2);
     }
 }

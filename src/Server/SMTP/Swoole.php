@@ -6,6 +6,7 @@ use Swoole\Constant;
 use Swoole\Coroutine;
 use Swoole\Coroutine\Client;
 use Swoole\Server;
+use Utopia\Console;
 use Utopia\Proxy\Adapter;
 use Utopia\Proxy\Protocol;
 use Utopia\Proxy\Resolver;
@@ -22,6 +23,26 @@ use Utopia\Proxy\Resolver;
  */
 class Swoole
 {
+    private const RECV_BUFFER = 8192;
+
+    private const PACKAGE_MAX_LENGTH = 10 * 1024 * 1024;
+
+    private const GREETING = "220 utopia-php.io ESMTP Proxy\r\n";
+
+    private const GREETING_CODE = '220';
+
+    private const DATA_READY_CODE = '354';
+
+    private const ERROR_UNKNOWN_COMMAND = "500 Unknown command\r\n";
+
+    private const ERROR_SYNTAX = "501 Syntax error\r\n";
+
+    private const ERROR_UNAVAILABLE = "421 Service not available\r\n";
+
+    private const DATA_TERMINATOR = '.';
+
+    private const DEFAULT_PORT = 25;
+
     protected Server $server;
 
     protected Adapter $adapter;
@@ -61,7 +82,7 @@ class Swoole
             'open_length_check' => false,
             'open_eof_check' => true,
             'package_eof' => "\r\n",
-            'package_max_length' => 10 * 1024 * 1024,
+            'package_max_length' => self::PACKAGE_MAX_LENGTH,
             'task_enable_coroutine' => true,
         ]);
 
@@ -74,9 +95,9 @@ class Swoole
 
     public function onStart(Server $server): void
     {
-        echo "SMTP Proxy Server started at {$this->config->host}:{$this->config->port}\n";
-        echo "Workers: {$this->config->workers}\n";
-        echo "Max connections: {$this->config->maxConnections}\n";
+        Console::success("SMTP Proxy Server started at {$this->config->host}:{$this->config->port}");
+        Console::log("Workers: {$this->config->workers}");
+        Console::log("Max connections: {$this->config->maxConnections}");
     }
 
     public function onWorkerStart(Server $server, int $workerId): void
@@ -86,13 +107,13 @@ class Swoole
             name: 'SMTP',
             protocol: Protocol::SMTP
         );
-        $this->adapter->setCacheTtl($this->config->cacheTTL);
+        $this->adapter->setCacheTTL($this->config->cacheTTL);
 
         if ($this->config->skipValidation) {
             $this->adapter->setSkipValidation(true);
         }
 
-        echo "Worker #{$workerId} started (Adapter: {$this->adapter->getName()})\n";
+        Console::log("Worker #{$workerId} started (Adapter: {$this->adapter->getName()})");
     }
 
     /**
@@ -100,9 +121,9 @@ class Swoole
      */
     public function onConnect(Server $server, int $fd, int $reactorId): void
     {
-        echo "Client #{$fd} connected\n";
+        Console::log("Client #{$fd} connected");
 
-        $server->send($fd, "220 utopia-php.io ESMTP Proxy\r\n");
+        $server->send($fd, self::GREETING);
 
         $this->connections[$fd] = new Connection();
     }
@@ -119,6 +140,12 @@ class Swoole
 
             $connection = $this->connections[$fd];
 
+            if ($connection->isData()) {
+                $this->forwardData($server, $fd, $data, $connection);
+
+                return;
+            }
+
             $command = strtoupper(substr(trim($data), 0, 4));
 
             switch ($command) {
@@ -133,16 +160,16 @@ class Swoole
                 case 'RSET':
                 case 'NOOP':
                 case 'QUIT':
-                    $this->forwardToBackend($server, $fd, $data, $connection);
+                    $this->forwardCommand($server, $fd, $data, $connection);
                     break;
 
                 default:
-                    $server->send($fd, "500 Unknown command\r\n");
+                    $server->send($fd, self::ERROR_UNKNOWN_COMMAND);
             }
 
         } catch (\Exception $e) {
-            echo "Error handling SMTP from #{$fd}: {$e->getMessage()}\n";
-            $server->send($fd, "421 Service not available\r\n");
+            Console::error("Error handling SMTP from #{$fd}: {$e->getMessage()}");
+            $server->send($fd, self::ERROR_UNAVAILABLE);
             $server->close($fd);
         }
     }
@@ -158,58 +185,101 @@ class Swoole
 
             $result = $this->adapter->route($domain);
 
-            $connection->backend = $this->connectToBackend($result->endpoint, 25);
+            $connection->backend = $this->connectToBackend($result->endpoint, self::DEFAULT_PORT);
 
-            $this->forwardToBackend($server, $fd, $data, $connection);
+            $this->forwardCommand($server, $fd, $data, $connection);
 
         } else {
-            $server->send($fd, "501 Syntax error\r\n");
+            $server->send($fd, self::ERROR_SYNTAX);
         }
     }
 
     /**
-     * Forward command to backend SMTP server
+     * Forward SMTP command to backend and relay response inline.
+     *
+     * SMTP is a sequential request-response protocol so we recv
+     * inline rather than spawning a goroutine.
      */
-    protected function forwardToBackend(Server $server, int $fd, string $data, Connection $connection): void
+    protected function forwardCommand(Server $server, int $fd, string $data, Connection $connection): void
     {
         if ($connection->backend === null) {
             throw new \Exception('No backend connection');
         }
 
-        $connection->backend->send($data);
+        $isDataCommand = strtoupper(substr(trim($data), 0, 4)) === 'DATA'
+            && strtoupper(trim($data)) === 'DATA';
 
-        \go(function () use ($server, $fd, $connection) {
-            $response = $connection->backend->recv(8192);
+        if ($connection->backend->send($data) === false) {
+            throw new \Exception('Failed to send command to backend');
+        }
+
+        /** @var string|false $response */
+        $response = $connection->backend->recv(self::RECV_BUFFER);
+
+        if (\is_string($response) && $response !== '') {
+            $server->send($fd, $response);
+
+            if ($isDataCommand && str_starts_with($response, self::DATA_READY_CODE)) {
+                $connection->state = 'data';
+            }
+        }
+    }
+
+    /**
+     * Forward raw message body data during DATA mode.
+     *
+     * In DATA mode all lines are forwarded verbatim without command
+     * parsing. The mode ends when the terminator line (single dot) is seen.
+     */
+    protected function forwardData(Server $server, int $fd, string $data, Connection $connection): void
+    {
+        if ($connection->backend === null) {
+            throw new \Exception('No backend connection');
+        }
+
+        if ($connection->backend->send($data) === false) {
+            throw new \Exception('Failed to send data to backend');
+        }
+
+        if (trim($data) === self::DATA_TERMINATOR) {
+            $connection->state = 'command';
+
+            $response = $connection->backend->recv(self::RECV_BUFFER);
 
             if ($response !== false && $response !== '') {
                 $server->send($fd, $response);
             }
-        });
+        }
     }
 
-    protected function connectToBackend(string $endpoint, int $port): Client
+    protected function connectToBackend(string $endpoint, int $defaultPort): Client
     {
-        [$host, $port] = explode(':', $endpoint . ':' . $port);
-        $port = (int) $port;
+        [$host, $port] = Adapter::parseEndpoint($endpoint, $defaultPort);
 
         $client = new Client(SWOOLE_SOCK_TCP);
-
-        if (!$client->connect($host, $port, $this->config->connectTimeout)) {
-            throw new \Exception("Failed to connect to backend SMTP: {$host}:{$port}");
-        }
 
         $client->set([
             'timeout' => $this->config->timeout,
         ]);
 
-        $client->recv(8192);
+        if (!$client->connect($host, $port, $this->config->connectTimeout)) {
+            throw new \Exception("Failed to connect to backend SMTP: {$host}:{$port}");
+        }
+
+        /** @var string|false $greeting */
+        $greeting = $client->recv(self::RECV_BUFFER);
+
+        if (!\is_string($greeting) || $greeting === '' || !str_starts_with(trim($greeting), self::GREETING_CODE)) {
+            $client->close();
+            throw new \Exception('Backend SMTP greeting failed: '.(\is_string($greeting) ? $greeting : 'no response'));
+        }
 
         return $client;
     }
 
     public function onClose(Server $server, int $fd, int $reactorId): void
     {
-        echo "Client #{$fd} disconnected\n";
+        Console::log("Client #{$fd} disconnected");
 
         if (isset($this->connections[$fd]) && $this->connections[$fd]->backend !== null) {
             $this->connections[$fd]->backend->close();

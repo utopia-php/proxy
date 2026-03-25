@@ -115,8 +115,7 @@ class TCP extends Adapter
 
         $result = $this->route($data);
 
-        [$host, $port] = \explode(':', $result->endpoint . ':' . $this->port);
-        $port = (int) $port;
+        [$host, $port] = self::parseEndpoint($result->endpoint, $this->port);
 
         $client = new Client(SWOOLE_SOCK_TCP);
 

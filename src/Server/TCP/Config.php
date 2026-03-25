@@ -33,6 +33,7 @@ class Config
         public readonly float $timeout = 30.0,
         public readonly float $connectTimeout = 5.0,
         public readonly bool $skipValidation = false,
+        public readonly int $cacheTTL = 0,
         public readonly ?TLS $tls = null,
         public readonly ?\Closure $adapterFactory = null,
     ) {
@@ -50,12 +51,12 @@ class Config
     /**
      * Get the TLS context builder, or null if TLS is not configured
      */
-    public function getTlsContext(): ?TlsContext
+    public function getTLSContext(): ?TLSContext
     {
         if ($this->tls === null) {
             return null;
         }
 
-        return new TlsContext($this->tls);
+        return new TLSContext($this->tls);
     }
 }

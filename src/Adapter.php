@@ -85,7 +85,7 @@ class Adapter
         return $this;
     }
 
-    public function setCacheTtl(int $seconds): static
+    public function setCacheTTL(int $seconds): static
     {
         $this->cacheTTL = $seconds;
 
@@ -237,7 +237,7 @@ class Adapter
             }
 
             if (!$this->skipValidation) {
-                $this->validate($endpoint);
+                $endpoint = $this->validate($endpoint);
             }
 
             if ($this->cacheTTL > 0) {
@@ -261,9 +261,12 @@ class Adapter
     }
 
     /**
-     * Validate backend endpoint to prevent SSRF attacks
+     * Validate backend endpoint to prevent SSRF attacks.
+     *
+     * Returns the validated endpoint with the hostname replaced by the
+     * resolved IP address to prevent DNS rebinding (TOCTOU) attacks.
      */
-    protected function validate(string $endpoint): void
+    protected function validate(string $endpoint): string
     {
         $parts = \explode(':', $endpoint);
         if (\count($parts) > 2) {
@@ -271,9 +274,10 @@ class Adapter
         }
 
         $host = $parts[0];
-        $port = isset($parts[1]) ? (int) $parts[1] : 0;
+        $hasPort = isset($parts[1]);
+        $port = $hasPort ? (int) $parts[1] : 0;
 
-        if ($port > 65535) {
+        if ($hasPort && ($port < 1 || $port > 65535)) {
             throw new ResolverException("Invalid port number: {$port}");
         }
 
@@ -307,21 +311,46 @@ class Adapter
                 }
             }
         } elseif (\filter_var($ip, FILTER_VALIDATE_IP, FILTER_FLAG_IPV6)) {
-            if ($ip === '::1' || \str_starts_with($ip, 'fe80:') || \str_starts_with($ip, 'fc00:') || \str_starts_with($ip, 'fd00:')) {
+            if (
+                $ip === '::1'
+                || \str_starts_with($ip, 'fe80:')
+                || \str_starts_with($ip, 'fc00:')
+                || \str_starts_with($ip, 'fd00:')
+                || \str_starts_with(\strtolower($ip), '::ffff:')
+            ) {
                 throw new ResolverException("Access to private/reserved IPv6 address is forbidden: {$ip}");
             }
         }
+
+        return $hasPort ? "{$ip}:{$port}" : $ip;
     }
 
     /**
      * Initialize routing cache table
      */
-    protected function initRouter(): void
+    protected function initRouter(int $size = 10_000): void
     {
-        $this->router = new Table(200_000);
+        $this->router = new Table($size);
         $this->router->column('endpoint', Table::TYPE_STRING, 256);
         $this->router->column('updated', Table::TYPE_INT, 8);
         $this->router->create();
+    }
+
+    /**
+     * Parse an endpoint string into host and port.
+     *
+     * If the endpoint already contains a port, that port is used.
+     * Otherwise the provided default port is used.
+     *
+     * @return array{0: string, 1: int}
+     */
+    public static function parseEndpoint(string $endpoint, int $defaultPort): array
+    {
+        $parts = \explode(':', $endpoint, 2);
+        $host = $parts[0];
+        $port = isset($parts[1]) && $parts[1] !== '' ? (int) $parts[1] : $defaultPort;
+
+        return [$host, $port];
     }
 
     /**
