@@ -1,10 +1,7 @@
 name: Tests
 
 on:
-  push:
-    branches: [main]
   pull_request:
-    branches: [main]
 
 jobs:
   unit:
@@ -15,10 +12,15 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Build test image
-        run: |
-          docker build -t proxy-test --target test -f Dockerfile.test .
+      - name: Setup PHP
+        uses: shivammathur/setup-php@v2
+        with:
+          php-version: '8.4'
+          extensions: swoole, redis, sockets
+          tools: composer:v2
+
+      - name: Install dependencies
+        run: composer install --prefer-dist --no-progress
 
       - name: Run tests
-        run: |
-          docker run --rm proxy-test composer test
+        run: composer test
