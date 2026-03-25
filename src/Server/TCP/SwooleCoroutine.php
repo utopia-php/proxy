@@ -185,7 +185,7 @@ class SwooleCoroutine
 
             $adapter->notifyConnect($fdKey);
 
-            Coroutine::create(function () use ($clientSocket, $backendSocket, $bufferSize, $adapter, $fdKey): void {
+            \go(function () use ($clientSocket, $backendSocket, $bufferSize, $adapter, $fdKey): void {
                 while (true) {
                     /** @var string|false $data */
                     $data = $backendSocket->recv($bufferSize);
@@ -236,7 +236,7 @@ class SwooleCoroutine
             $this->onWorkerStart(0);
 
             foreach ($this->servers as $server) {
-                Coroutine::create(function () use ($server): void {
+                \go(function () use ($server): void {
                     $server->start();
                 });
             }

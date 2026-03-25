@@ -107,8 +107,6 @@ class Swoole
 
     /**
      * Main SMTP command handler
-     *
-     * Performance: <1ms per command
      */
     public function onReceive(Server $server, int $fd, int $reactorId, string $data): void
     {
@@ -178,7 +176,7 @@ class Swoole
 
         $connection->backend->send($data);
 
-        Coroutine::create(function () use ($server, $fd, $connection) {
+        \go(function () use ($server, $fd, $connection) {
             $response = $connection->backend->recv(8192);
 
             if ($response !== false && $response !== '') {
