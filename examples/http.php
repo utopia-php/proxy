@@ -5,7 +5,7 @@ require __DIR__.'/../vendor/autoload.php';
 use Utopia\Proxy\Resolver;
 use Utopia\Proxy\Resolver\Result;
 use Utopia\Proxy\Server\HTTP\Swoole as HTTPServer;
-use Utopia\Proxy\Server\HTTP\SwooleCoroutine as HTTPCoroutineServer;
+use Utopia\Proxy\Server\HTTP\Swoole\Coroutine as HTTPCoroutineServer;
 
 /**
  * HTTP Proxy Server Example

@@ -1,13 +1,14 @@
 <?php
 
-namespace Utopia\Proxy\Server\HTTP;
+namespace Utopia\Proxy\Server\HTTP\Swoole;
 
-use Swoole\Coroutine;
+use Swoole\Coroutine as SwooleCoroutine;
 use Swoole\Coroutine\Http\Server as CoroutineServer;
 use Utopia\Console;
 use Utopia\Proxy\Adapter;
 use Utopia\Proxy\Protocol;
 use Utopia\Proxy\Resolver;
+use Utopia\Proxy\Server\HTTP\Config;
 
 /**
  * High-performance HTTP proxy server (Swoole Coroutine Implementation)
@@ -15,11 +16,11 @@ use Utopia\Proxy\Resolver;
  * Example:
  * ```php
  * $resolver = new MyFunctionResolver();
- * $server = new SwooleCoroutine($resolver, new Config(host: '0.0.0.0', port: 80));
+ * $server = new Coroutine($resolver, new Config(host: '0.0.0.0', port: 80));
  * $server->start();
  * ```
  */
-class SwooleCoroutine
+class Coroutine
 {
     use Handler;
 
@@ -100,7 +101,7 @@ class SwooleCoroutine
 
     public function start(): void
     {
-        if (Coroutine::getCid() > 0) {
+        if (SwooleCoroutine::getCid() > 0) {
             $this->onStart();
             $this->onWorkerStart(0);
             $this->server->start();
@@ -108,7 +109,7 @@ class SwooleCoroutine
             return;
         }
 
-        Coroutine\run(function (): void {
+        SwooleCoroutine\run(function (): void {
             $this->onStart();
             $this->onWorkerStart(0);
             $this->server->start();

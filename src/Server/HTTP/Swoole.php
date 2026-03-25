@@ -8,6 +8,7 @@ use Utopia\Console;
 use Utopia\Proxy\Adapter;
 use Utopia\Proxy\Protocol;
 use Utopia\Proxy\Resolver;
+use Utopia\Proxy\Server\HTTP\Swoole\Handler;
 
 /**
  * High-performance HTTP proxy server (Swoole Implementation)

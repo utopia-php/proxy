@@ -1,6 +1,6 @@
 <?php
 
-namespace Utopia\Proxy\Server\HTTP;
+namespace Utopia\Proxy\Server\HTTP\Swoole;
 
 use Swoole\Coroutine\Channel;
 use Swoole\Coroutine\Client as CoroutineClient;
@@ -9,6 +9,8 @@ use Swoole\Http\Request;
 use Swoole\Http\Response;
 use Utopia\Console;
 use Utopia\Proxy\Adapter;
+use Utopia\Proxy\Server\HTTP\Config;
+use Utopia\Proxy\Server\HTTP\Telemetry;
 use Utopia\Validator\Hostname;
 
 /**
