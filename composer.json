@@ -1,5 +1,5 @@
 {
-    "name": "appwrite/protocol-proxy",
+    "name": "utopia-php/proxy",
     "description": "High-performance protocol-agnostic proxy with Swoole for HTTP, TCP, and SMTP",
     "type": "library",
     "license": "BSD-3-Clause",
@@ -10,35 +10,46 @@
         }
     ],
     "require": {
-        "php": ">=8.2",
-        "ext-swoole": ">=5.0",
+        "php": ">=8.4",
         "ext-redis": "*",
-        "utopia-php/database": "4.*",
+        "ext-swoole": ">=6.0",
+        "utopia-php/console": "*",
+        "utopia-php/validators": "*"
     },
     "require-dev": {
-        "phpunit/phpunit": "^10.0",
-        "phpstan/phpstan": "^1.10",
-        "laravel/pint": "^1.13"
+        "phpunit/phpunit": "12.*",
+        "phpstan/phpstan": "*",
+        "laravel/pint": "*"
     },
     "autoload": {
         "psr-4": {
-            "Appwrite\\ProtocolProxy\\": "src/"
+            "Utopia\\Proxy\\": "src/"
         }
     },
     "autoload-dev": {
         "psr-4": {
-            "Tests\\": "tests/"
+            "Utopia\\Tests\\": "tests/"
         }
     },
     "scripts": {
-        "test": "phpunit",
-        "lint": "pint",
-        "analyse": "phpstan analyse"
+        "bench:http": "php benchmarks/http.php",
+        "bench:tcp": "php benchmarks/tcp.php",
+        "test": "phpunit --testsuite Unit",
+        "test:integration": "phpunit --testsuite Integration",
+        "test:all": "phpunit",
+        "lint": "pint --test --config=pint.json",
+        "format": "pint --config=pint.json",
+        "check": "phpstan analyse --level=max --memory-limit=2G src tests"
     },
     "config": {
+        "php": "8.4",
         "optimize-autoloader": true,
-        "sort-packages": true
+        "sort-packages": true,
+        "allow-plugins": {
+            "php-http/discovery": true,
+            "tbachert/spi": true
+        }
     },
-    "minimum-stability": "stable",
+    "minimum-stability": "dev",
     "prefer-stable": true
 }

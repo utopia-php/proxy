@@ -1,0 +1,118 @@
+services:
+
+  mariadb:
+    image: mariadb:11.2
+    container_name: proxy-mariadb
+    restart: unless-stopped
+    environment:
+      MYSQL_ROOT_PASSWORD: rootpassword
+      MYSQL_DATABASE: appwrite
+      MYSQL_USER: appwrite
+      MYSQL_PASSWORD: password
+    ports:
+      - "${MARIADB_PORT:-3306}:3306"
+    volumes:
+      - mariadb_data:/var/lib/mysql
+    networks:
+      - proxy
+    healthcheck:
+      test: ["CMD", "healthcheck.sh", "--connect", "--innodb_initialized"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  redis:
+    image: redis:7-alpine
+    container_name: proxy-redis
+    restart: unless-stopped
+    ports:
+      - "${REDIS_PORT:-6379}:6379"
+    volumes:
+      - redis_data:/data
+    networks:
+      - proxy
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  http-proxy:
+    build: .
+    container_name: proxy-http
+    restart: unless-stopped
+    ports:
+      - "${HTTP_PROXY_PORT:-8080}:8080"
+    environment:
+      DB_HOST: mariadb
+      DB_PORT: 3306
+      DB_USER: appwrite
+      DB_PASS: password
+      DB_NAME: appwrite
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+      COMPUTE_API_URL: http://appwrite/v1/compute
+      COMPUTE_API_KEY: ""
+    depends_on:
+      mariadb:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    networks:
+      - proxy
+    command: php examples/http.php
+
+  tcp-proxy:
+    build: .
+    container_name: proxy-tcp
+    restart: unless-stopped
+    ports:
+      - "${TCP_POSTGRES_PORT:-5432}:5432"
+      - "${TCP_MYSQL_PORT:-3306}:3306"
+    environment:
+      DB_HOST: mariadb
+      DB_PORT: 3306
+      DB_USER: appwrite
+      DB_PASS: password
+      DB_NAME: appwrite
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+    depends_on:
+      mariadb:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    networks:
+      - proxy
+    command: php examples/tcp.php
+
+  smtp-proxy:
+    build: .
+    container_name: proxy-smtp
+    restart: unless-stopped
+    ports:
+      - "${SMTP_PROXY_PORT:-8025}:25"
+    environment:
+      DB_HOST: mariadb
+      DB_PORT: 3306
+      DB_USER: appwrite
+      DB_PASS: password
+      DB_NAME: appwrite
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+    depends_on:
+      mariadb:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    networks:
+      - proxy
+    command: php examples/smtp.php
+
+networks:
+  proxy:
+    driver: bridge
+
+volumes:
+  mariadb_data:
+  redis_data:

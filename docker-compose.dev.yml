@@ -1,0 +1,26 @@
+version: '3.8'
+
+# Development override for docker-compose
+# Usage: docker-compose -f docker-compose.yml -f docker-compose.dev.yml up
+
+services:
+  http-proxy:
+    volumes:
+      - ./src:/app/src:ro
+      - ./examples:/app/examples:ro
+    environment:
+      - SWOOLE_LOG_LEVEL=debug
+
+  tcp-proxy:
+    volumes:
+      - ./src:/app/src:ro
+      - ./examples:/app/examples:ro
+    environment:
+      - SWOOLE_LOG_LEVEL=debug
+
+  smtp-proxy:
+    volumes:
+      - ./src:/app/src:ro
+      - ./examples:/app/examples:ro
+    environment:
+      - SWOOLE_LOG_LEVEL=debug
