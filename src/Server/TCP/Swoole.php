@@ -7,12 +7,20 @@ use Swoole\Coroutine;
 use Swoole\Coroutine\Client;
 use Swoole\Coroutine\Socket;
 use Swoole\Server;
+use Swoole\Server\Port;
+use Swoole\Timer;
 use Utopia\Console;
 use Utopia\Proxy\Adapter\TCP as TCPAdapter;
+use Utopia\Proxy\Dns;
 use Utopia\Proxy\Resolver;
 
 /**
  * High-performance TCP proxy server (Swoole Implementation)
+ *
+ * Defaults to SWOOLE_BASE mode: each worker owns its own reactor and listen
+ * socket (via SO_REUSEPORT), removing the reactor → worker IPC pipe used in
+ * PROCESS mode. This matches HAProxy's nbthread-per-core model and roughly
+ * doubles small-request throughput on CPU-bound forwarding workloads.
  *
  * Supports optional TLS termination:
  * - PostgreSQL: STARTTLS via SSLRequest/SSLResponse handshake
@@ -42,29 +50,21 @@ class Swoole
 
     protected ?TLSContext $tlsContext = null;
 
-    /** @var array<int, Client> Primary/default backend connections */
-    protected array $clients = [];
-
-    /** @var array<int, int> */
-    protected array $clientPorts = [];
-
     /**
-     * Tracks connections awaiting TLS upgrade (PostgreSQL STARTTLS).
-     * After sending 'S' in response to SSLRequest, the connection
-     * must complete the TLS handshake before we see the real startup message.
+     * Per-fd connection state, keyed by file descriptor.
      *
-     * @var array<int, bool>
+     * @var array<int, Connection>
      */
-    protected array $pendingTls = [];
+    protected array $connections = [];
 
     protected ?Resolver $resolver;
 
     public function __construct(
-        Config $config,
         ?Resolver $resolver = null,
+        ?Config $config = null,
     ) {
         $this->resolver = $resolver;
-        $this->config = $config;
+        $this->config = $config ?? new Config(ports: [5432]);
 
         if ($this->config->isTlsEnabled()) {
             /** @var TLS $tls */
@@ -77,16 +77,17 @@ class Swoole
             ? $this->tlsContext->getSocketType()
             : SWOOLE_SOCK_TCP;
 
-        // Create main server on first port
         $this->server = new Server(
             $this->config->host,
             $this->config->ports[0],
-            SWOOLE_PROCESS,
+            $this->config->serverMode,
             $socketType,
         );
 
-        // Add listeners for additional ports
-        for ($i = 1; $i < count($this->config->ports); $i++) {
+        // Additional ports are attached as listeners; each gets its own
+        // receive handler so the port is captured in the closure rather than
+        // looked up on every packet.
+        for ($i = 1; $i < \count($this->config->ports); $i++) {
             $this->server->addlistener(
                 $this->config->host,
                 $this->config->ports[$i],
@@ -109,7 +110,6 @@ class Swoole
             'enable_coroutine' => $this->config->enableCoroutine,
             'max_wait_time' => $this->config->maxWaitTime,
             'log_level' => $this->config->logLevel,
-            'dispatch_mode' => $this->config->dispatchMode,
             'enable_reuse_port' => $this->config->enableReusePort,
             'backlog' => $this->config->backlog,
 
@@ -126,30 +126,61 @@ class Swoole
             'open_length_check' => false,
             'package_max_length' => $this->config->packageMaxLength,
 
-            // Enable stats
             'task_enable_coroutine' => true,
         ];
 
-        // Apply TLS settings when enabled
         if ($this->tlsContext !== null) {
-            $settings = array_merge($settings, $this->tlsContext->toSwooleConfig());
+            $settings = \array_merge($settings, $this->tlsContext->toSwooleConfig());
         }
 
         $this->server->set($settings);
 
         $this->server->on(Constant::EVENT_START, $this->onStart(...));
         $this->server->on(Constant::EVENT_WORKER_START, $this->onWorkerStart(...));
-        $this->server->on(Constant::EVENT_CONNECT, $this->onConnect(...));
-        $this->server->on(Constant::EVENT_RECEIVE, $this->onReceive(...));
         $this->server->on(Constant::EVENT_CLOSE, $this->onClose(...));
+
+        // Bind one Receive handler per port with the port captured in-closure.
+        // This avoids a getClientInfo() syscall per new connection and keeps
+        // the routing dispatch zero-cost once a fd is known.
+        $primaryPort = $this->config->ports[0];
+        foreach ($this->config->ports as $index => $port) {
+            $handler = function (Server $server, int $fd, int $reactorId, string $data) use ($port): void {
+                $this->onReceive($server, $fd, $data, $port);
+            };
+
+            if ($port === $primaryPort) {
+                $this->server->on(Constant::EVENT_RECEIVE, $handler);
+
+                continue;
+            }
+
+            $listener = $this->resolveListener($index);
+            if ($listener !== null) {
+                $listener->on('Receive', $handler);
+            }
+        }
+    }
+
+    private function resolveListener(int $index): ?Port
+    {
+        /** @var array<int, Port> $ports */
+        $ports = $this->server->ports;
+
+        return $ports[$index] ?? null;
     }
 
     public function onStart(Server $server): void
     {
         Console::success("TCP Proxy Server started at {$this->config->host}");
-        Console::log('Ports: '.implode(', ', $this->config->ports));
+        Console::log('Ports: '.\implode(', ', $this->config->ports));
         Console::log("Workers: {$this->config->workers}");
         Console::log("Max connections: {$this->config->maxConnections}");
+        Console::log('Server mode: '.($this->config->serverMode === SWOOLE_BASE ? 'BASE' : 'PROCESS'));
+
+        $jitStatus = self::detectJitStatus();
+        if ($jitStatus !== null) {
+            Console::log('JIT: '.$jitStatus);
+        }
 
         if ($this->config->isTlsEnabled()) {
             Console::info('TLS: enabled');
@@ -159,9 +190,53 @@ class Swoole
         }
     }
 
+    /**
+     * Report whether the JIT is actually enabled inside this Swoole worker.
+     *
+     * PHP 8.3+ shipped a fix that lets OPcache's tracing JIT coexist with
+     * Swoole's opcode handlers, but it silently stays off on older builds
+     * or when opcache.enable_cli is 0. Logging at startup makes JIT
+     * misconfiguration visible in ops.
+     */
+    private static function detectJitStatus(): ?string
+    {
+        if (!\function_exists('opcache_get_status')) {
+            return null;
+        }
+
+        /** @var array<string, mixed>|false $status */
+        $status = @\opcache_get_status(false);
+        if (!\is_array($status)) {
+            return 'unavailable (opcache off)';
+        }
+
+        /** @var array<string, mixed> $jit */
+        $jit = \is_array($status['jit'] ?? null) ? $status['jit'] : [];
+        $on = $jit['on'] ?? false;
+
+        return $on ? 'enabled' : 'disabled';
+    }
+
     public function onWorkerStart(Server $server, int $workerId): void
     {
-        // Initialize TCP adapter per worker per port
+        // Disable GC in long-lived workers and collect cycles on a timer.
+        // Stops GC sweeps from stalling the reactor under high allocation churn.
+        \gc_disable();
+        Timer::tick($this->config->gcIntervalMs, static function (): void {
+            \gc_collect_cycles();
+        });
+
+        // Drop the coroutine stack from Swoole's 2MB default to 256KB: the
+        // forward loop is shallow and doesn't need 2MB of C stack per
+        // connection. Going smaller than ~128KB breaks PHP's zend.reserved
+        // stack margin, so 256KB is the conservative floor.
+        Coroutine::set([
+            'stack_size' => $this->config->coroutineStackSize,
+            'max_coroutine' => $this->config->maxCoroutine,
+        ]);
+
+        Dns::setTtl($this->config->dnsCacheTtl);
+
         foreach ($this->config->ports as $port) {
             if ($this->config->adapterFactory !== null) {
                 /** @var TCPAdapter $adapter */
@@ -178,29 +253,17 @@ class Swoole
                 $adapter->setCacheTTL($this->config->cacheTTL);
             }
 
-            $adapter->setTimeout($this->config->timeout);
-            $adapter->setConnectTimeout($this->config->connectTimeout);
+            $adapter
+                ->setTimeout($this->config->timeout)
+                ->setConnectTimeout($this->config->connectTimeout)
+                ->setTcpUserTimeout($this->config->tcpUserTimeoutMs)
+                ->setTcpQuickAck($this->config->tcpQuickAck)
+                ->setTcpNotsentLowat($this->config->tcpNotsentLowat);
 
             $this->adapters[$port] = $adapter;
         }
 
         Console::log("Worker #{$workerId} started");
-    }
-
-    /**
-     * Handle new TCP connection
-     */
-    public function onConnect(Server $server, int $fd, int $reactorId): void
-    {
-        /** @var array<string, mixed> $info */
-        $info = $server->getClientInfo($fd);
-        /** @var int $port */
-        $port = $info['server_port'] ?? 0;
-        $this->clientPorts[$fd] = $port;
-
-        if ($this->config->logConnections) {
-            Console::log("Client #{$fd} connected to port {$port}");
-        }
     }
 
     /**
@@ -210,56 +273,43 @@ class Swoole
      * - PostgreSQL: Intercepts SSLRequest, responds 'S', Swoole upgrades to TLS
      * - MySQL: Swoole handles SSL natively via SWOOLE_SSL socket type
      */
-    public function onReceive(Server $server, int $fd, int $reactorId, string $data): void
+    public function onReceive(Server $server, int $fd, string $data, int $port): void
     {
-        $resourceId = (string) $fd;
+        $connection = $this->connections[$fd] ?? null;
 
         // Fast path: existing connection - forward to appropriate backend
-        if (isset($this->clients[$fd])) {
-            $port = $this->clientPorts[$fd] ?? 0;
-            $adapter = $this->adapters[$port] ?? null;
-
+        if ($connection !== null && $connection->backend !== null) {
+            $adapter = $this->adapters[$connection->port] ?? null;
             if ($adapter !== null) {
+                $resourceId = (string) $fd;
                 $adapter->recordBytes($resourceId, \strlen($data), 0);
                 $adapter->track($resourceId);
             }
 
-            if ($this->clients[$fd]->send($data) === false) {
+            if ($connection->backend->send($data) === false) {
                 $server->close($fd);
             }
 
             return;
         }
 
+        if ($connection === null) {
+            $connection = new Connection();
+            $connection->port = $port;
+            $this->connections[$fd] = $connection;
+        }
+
         // Handle PostgreSQL STARTTLS: SSLRequest comes before the real startup message.
-        if ($this->tlsContext !== null && TLS::isPostgreSQLSSLRequest($data)) {
-            $port = $this->clientPorts[$fd] ?? null;
-            if ($port !== null && $port === 5432) {
-                $server->send($fd, TLS::PG_SSL_RESPONSE_OK);
-                $this->pendingTls[$fd] = true;
+        if ($this->tlsContext !== null && $port === 5432 && TLS::isPostgreSQLSSLRequest($data)) {
+            $server->send($fd, TLS::PG_SSL_RESPONSE_OK);
+            $connection->pendingTls = true;
 
-                return;
-            }
+            return;
         }
 
-        if (isset($this->pendingTls[$fd])) {
-            unset($this->pendingTls[$fd]);
-        }
+        $connection->pendingTls = false;
 
-        // Slow path: new connection setup
         try {
-            $port = $this->clientPorts[$fd] ?? null;
-            if ($port === null) {
-                /** @var array<string, mixed> $info */
-                $info = $server->getClientInfo($fd);
-                /** @var int $port */
-                $port = $info['server_port'] ?? 0;
-                if ($port === 0) {
-                    throw new \Exception('Missing server port for connection');
-                }
-                $this->clientPorts[$fd] = $port;
-            }
-
             $adapter = $this->adapters[$port] ?? null;
             if ($adapter === null) {
                 throw new \Exception("No adapter registered for port {$port}");
@@ -267,15 +317,17 @@ class Swoole
 
             // Route via resolver — the resolver receives raw initial data
             // and is responsible for extracting any routing information
-            $backendClient = $adapter->getConnection($data, $fd);
-            $this->clients[$fd] = $backendClient;
+            $backend = $adapter->getConnection($data, $fd);
+            $connection->backend = $backend;
 
+            $resourceId = (string) $fd;
             $adapter->notifyConnect($resourceId);
 
             // Forward initial data to primary
-            $backendClient->send($data);
+            $backend->send($data);
+            $adapter->recordBytes($resourceId, \strlen($data), 0);
 
-            $this->forward($server, $fd, $backendClient);
+            $this->forward($server, $fd, $backend, $adapter);
 
         } catch (\Exception $e) {
             Console::error("Error handling data from #{$fd}: {$e->getMessage()}");
@@ -284,28 +336,33 @@ class Swoole
     }
 
     /**
-     * Bidirectional forwarding loop
+     * Backend → client forwarding coroutine.
+     *
+     * The client → backend direction is driven by the reactor's onReceive
+     * callback directly; only the backend → client side needs its own
+     * read loop because the backend socket is not registered with the
+     * server's reactor.
      */
-    protected function forward(Server $server, int $clientFd, Client $backendClient): void
+    protected function forward(Server $server, int $clientFd, Client $backend, TCPAdapter $adapter): void
     {
         $bufferSize = $this->config->receiveBufferSize;
-        /** @var Socket $backendSocket */
-        $backendSocket = $backendClient->exportSocket();
+        $exported = $backend->exportSocket();
+        if (!$exported instanceof Socket) {
+            $server->close($clientFd);
 
+            return;
+        }
+        $backendSocket = $exported;
         $resourceId = (string) $clientFd;
-        $port = $this->clientPorts[$clientFd] ?? null;
-        $adapter = ($port !== null) ? ($this->adapters[$port] ?? null) : null;
 
-        \go(function () use ($server, $clientFd, $backendSocket, $bufferSize, $resourceId, $adapter) {
+        \go(function () use ($server, $clientFd, $backendSocket, $bufferSize, $resourceId, $adapter): void {
             while ($server->exist($clientFd)) {
                 /** @var string|false $data */
                 $data = $backendSocket->recv($bufferSize);
                 if ($data === false || $data === '') {
                     break;
                 }
-                if ($adapter !== null) {
-                    $adapter->recordBytes($resourceId, 0, \strlen($data));
-                }
+                $adapter->recordBytes($resourceId, 0, \strlen($data));
                 if ($server->send($clientFd, $data) === false) {
                     break;
                 }
@@ -320,22 +377,20 @@ class Swoole
             Console::log("Client #{$fd} disconnected");
         }
 
-        if (isset($this->clients[$fd])) {
-            $this->clients[$fd]->close();
-            unset($this->clients[$fd]);
+        $connection = $this->connections[$fd] ?? null;
+        if ($connection === null) {
+            return;
         }
 
-        if (isset($this->clientPorts[$fd])) {
-            $port = $this->clientPorts[$fd];
-            $adapter = $this->adapters[$port] ?? null;
-            if ($adapter) {
-                $adapter->notifyClose((string) $fd);
-                $adapter->closeConnection($fd);
-            }
+        unset($this->connections[$fd]);
+
+        $adapter = $this->adapters[$connection->port] ?? null;
+        if ($adapter !== null) {
+            $adapter->notifyClose((string) $fd);
+            $adapter->closeConnection($fd);
         }
 
-        unset($this->clientPorts[$fd]);
-        unset($this->pendingTls[$fd]);
+        $connection->reset();
     }
 
     public function start(): void

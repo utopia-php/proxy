@@ -7,8 +7,10 @@ use Swoole\Coroutine\Channel;
 use Swoole\Coroutine\Server as CoroutineServer;
 use Swoole\Coroutine\Server\Connection;
 use Swoole\Coroutine\Socket;
+use Swoole\Timer;
 use Utopia\Console;
 use Utopia\Proxy\Adapter\TCP as TCPAdapter;
+use Utopia\Proxy\Dns;
 use Utopia\Proxy\Resolver;
 use Utopia\Proxy\Server\TCP\Config;
 use Utopia\Proxy\Server\TCP\TLS;
@@ -17,20 +19,20 @@ use Utopia\Proxy\Server\TCP\TLSContext;
 /**
  * High-performance TCP proxy server (Swoole Coroutine Implementation)
  *
+ * Uses coroutine-native sockets throughout. The default TCP server
+ * (Server/TCP/Swoole.php) in SWOOLE_BASE mode outperforms this variant
+ * on most workloads — this one is kept for users who need coroutine-level
+ * control over each connection (e.g. custom protocol state machines).
+ *
  * Supports optional TLS termination:
  * - PostgreSQL: STARTTLS via SSLRequest/SSLResponse handshake
  * - MySQL: SSL capability flag in server greeting
- *
- * When TLS is enabled, the coroutine server creates SSL-enabled listeners
- * and handles TLS handshakes per-connection. For PostgreSQL STARTTLS,
- * the proxy intercepts the SSLRequest, responds with 'S', then enables
- * crypto on the socket before processing the real startup message.
  *
  * Example:
  * ```php
  * $tls = new TLS(certificate: '/certs/server.crt', key: '/certs/server.key');
  * $config = new Config(ports: [5432, 3306], tls: $tls);
- * $server = new Coroutine($config, $resolver);
+ * $server = new Coroutine($resolver, $config);
  * $server->start();
  * ```
  */
@@ -46,11 +48,14 @@ class Coroutine
 
     protected ?TLSContext $tlsContext = null;
 
+    protected ?Resolver $resolver;
+
     public function __construct(
-        Config $config,
-        protected Resolver $resolver,
+        ?Resolver $resolver = null,
+        ?Config $config = null,
     ) {
-        $this->config = $config;
+        $this->resolver = $resolver;
+        $this->config = $config ?? new Config(ports: [5432]);
 
         if ($this->config->isTlsEnabled()) {
             /** @var TLS $tls */
@@ -81,8 +86,12 @@ class Coroutine
                 $adapter->setCacheTTL($this->config->cacheTTL);
             }
 
-            $adapter->setTimeout($this->config->timeout);
-            $adapter->setConnectTimeout($this->config->connectTimeout);
+            $adapter
+                ->setTimeout($this->config->timeout)
+                ->setConnectTimeout($this->config->connectTimeout)
+                ->setTcpUserTimeout($this->config->tcpUserTimeoutMs)
+                ->setTcpQuickAck($this->config->tcpQuickAck)
+                ->setTcpNotsentLowat($this->config->tcpNotsentLowat);
 
             $this->adapters[$port] = $adapter;
         }
@@ -93,6 +102,7 @@ class Coroutine
         SwooleCoroutine::set([
             'max_coroutine' => $this->config->maxCoroutine,
             'socket_buffer_size' => $this->config->socketBufferSize,
+            'stack_size' => $this->config->coroutineStackSize,
             'log_level' => $this->config->logLevel,
         ]);
 
@@ -113,7 +123,7 @@ class Coroutine
             ];
 
             if ($this->tlsContext !== null) {
-                $settings = array_merge($settings, $this->tlsContext->toSwooleConfig());
+                $settings = \array_merge($settings, $this->tlsContext->toSwooleConfig());
             }
 
             $server->set($settings);
@@ -129,9 +139,14 @@ class Coroutine
     public function onStart(): void
     {
         Console::success("TCP Proxy Server started at {$this->config->host}");
-        Console::log('Ports: '.implode(', ', $this->config->ports));
+        Console::log('Ports: '.\implode(', ', $this->config->ports));
         Console::log("Workers: {$this->config->workers}");
         Console::log("Max connections: {$this->config->maxConnections}");
+
+        $jitStatus = self::detectJitStatus();
+        if ($jitStatus !== null) {
+            Console::log('JIT: '.$jitStatus);
+        }
 
         if ($this->config->isTlsEnabled()) {
             Console::info('TLS: enabled');
@@ -143,6 +158,13 @@ class Coroutine
 
     public function onWorkerStart(int $workerId = 0): void
     {
+        \gc_disable();
+        Timer::tick($this->config->gcIntervalMs, static function (): void {
+            \gc_collect_cycles();
+        });
+
+        Dns::setTtl($this->config->dnsCacheTtl);
+
         Console::log("Worker #{$workerId} started");
     }
 
@@ -150,7 +172,7 @@ class Coroutine
     {
         /** @var Socket $clientSocket */
         $clientSocket = $connection->exportSocket();
-        $clientId = spl_object_id($connection);
+        $clientId = \spl_object_id($connection);
         $adapter = $this->adapters[$port];
         $bufferSize = $this->config->receiveBufferSize;
 
@@ -166,11 +188,8 @@ class Coroutine
             return;
         }
 
-        // Handle PostgreSQL STARTTLS negotiation.
-        // PG clients send an SSLRequest before the real startup message.
-        // When TLS is enabled with Swoole's coroutine SSL server, the TLS
-        // handshake is handled at the transport level. We respond with 'S'
-        // to satisfy the PG protocol, then read the real startup message.
+        // PostgreSQL STARTTLS: clients send an SSLRequest before the startup
+        // message. Respond with 'S' and read the real startup packet.
         if ($this->tlsContext !== null && $port === 5432 && TLS::isPostgreSQLSSLRequest($data)) {
             $clientSocket->sendAll(TLS::PG_SSL_RESPONSE_OK);
 
@@ -271,6 +290,33 @@ class Coroutine
         }
 
         SwooleCoroutine\run($runner);
+    }
+
+    /**
+     * Report whether the JIT is actually enabled inside this Swoole worker.
+     *
+     * PHP 8.3+ shipped a fix that lets OPcache's tracing JIT coexist with
+     * Swoole's opcode handlers, but it silently stays off on older builds
+     * or when opcache.enable_cli is 0. Logging the state at startup makes
+     * JIT misconfiguration visible in ops.
+     */
+    private static function detectJitStatus(): ?string
+    {
+        if (!\function_exists('opcache_get_status')) {
+            return null;
+        }
+
+        /** @var array<string, mixed>|false $status */
+        $status = @\opcache_get_status(false);
+        if (!\is_array($status)) {
+            return 'unavailable (opcache off)';
+        }
+
+        /** @var array<string, mixed> $jit */
+        $jit = \is_array($status['jit'] ?? null) ? $status['jit'] : [];
+        $on = $jit['on'] ?? false;
+
+        return $on ? 'enabled' : 'disabled';
     }
 
     /**

@@ -50,9 +50,10 @@ $envBool = static function (string $key, bool $default): bool {
     return $value === false ? $default : filter_var($value, FILTER_VALIDATE_BOOLEAN);
 };
 
-$workers = $envInt('TCP_WORKERS', swoole_cpu_num() * 2);
-$reactorNum = $envInt('TCP_REACTOR_NUM', swoole_cpu_num() * 2);
-$dispatchMode = $envInt('TCP_DISPATCH_MODE', 2);
+$workers = $envInt('TCP_WORKERS', swoole_cpu_num());
+$reactorNum = $envInt('TCP_REACTOR_NUM', swoole_cpu_num());
+$serverModeName = strtolower(getenv('TCP_SERVER_MODE') ?: 'base');
+$serverMode = $serverModeName === 'process' ? SWOOLE_PROCESS : SWOOLE_BASE;
 
 $backendEndpoint = getenv('TCP_BACKEND_ENDPOINT') ?: 'tcp-backend:15432';
 $skipValidation = $envBool('TCP_SKIP_VALIDATION', false);
@@ -124,7 +125,7 @@ $config = new TCPConfig(
     ports: $ports,
     workers: $workers,
     reactorNum: $reactorNum,
-    dispatchMode: $dispatchMode,
+    serverMode: $serverMode,
     skipValidation: $skipValidation,
     tls: $tls,
 );

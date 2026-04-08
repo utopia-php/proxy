@@ -128,12 +128,13 @@ class Adapter
         int $inbound = 0,
         int $outbound = 0,
     ): void {
-        if (!isset($this->bytes[$resourceId])) {
-            $this->bytes[$resourceId] = new Bytes();
+        $entry = $this->bytes[$resourceId] ?? null;
+        if ($entry === null) {
+            $entry = new Bytes();
+            $this->bytes[$resourceId] = $entry;
         }
-
-        $this->bytes[$resourceId]->inbound += $inbound;
-        $this->bytes[$resourceId]->outbound += $outbound;
+        $entry->inbound += $inbound;
+        $entry->outbound += $outbound;
     }
 
     /**
@@ -141,7 +142,7 @@ class Adapter
      */
     public function track(string $resourceId, array $metadata = []): void
     {
-        $now = time();
+        $now = \time();
         $lastUpdate = $this->lastActivity[$resourceId] ?? 0;
 
         if (($now - $lastUpdate) < $this->interval) {
@@ -150,10 +151,12 @@ class Adapter
 
         $this->lastActivity[$resourceId] = $now;
 
-        if (isset($this->bytes[$resourceId])) {
-            $metadata['inboundBytes'] = $this->bytes[$resourceId]->inbound;
-            $metadata['outboundBytes'] = $this->bytes[$resourceId]->outbound;
-            $this->bytes[$resourceId] = new Bytes();
+        $entry = $this->bytes[$resourceId] ?? null;
+        if ($entry !== null) {
+            $metadata['inboundBytes'] = $entry->inbound;
+            $metadata['outboundBytes'] = $entry->outbound;
+            $entry->inbound = 0;
+            $entry->outbound = 0;
         }
 
         $this->resolver?->track($resourceId, $metadata);
@@ -216,13 +219,13 @@ class Adapter
                 $result = $this->resolver->resolve($resourceId);
             } else {
                 throw new ResolverException(
-                    "No resolver or resolve callback configured",
+                    'No resolver or resolve callback configured',
                     ResolverException::NOT_FOUND
                 );
             }
             $endpoint = $result->endpoint;
 
-            if (empty($endpoint)) {
+            if ($endpoint === '') {
                 throw new ResolverException(
                     "Resolver returned empty endpoint for: {$resourceId}",
                     ResolverException::NOT_FOUND
@@ -242,10 +245,13 @@ class Adapter
 
             $this->stats['connections']++;
 
+            $metadata = $result->metadata;
+            $metadata['cached'] = false;
+
             return new ConnectionResult(
                 endpoint: $endpoint,
                 protocol: $this->getProtocol(),
-                metadata: \array_merge(['cached' => false], $result->metadata)
+                metadata: $metadata,
             );
         } catch (\Exception $e) {
             $this->stats['routingErrors']++;
@@ -258,6 +264,9 @@ class Adapter
      *
      * Returns the validated endpoint with the hostname replaced by the
      * resolved IP address to prevent DNS rebinding (TOCTOU) attacks.
+     *
+     * Uses the coroutine-aware DNS resolver, which keeps the reactor
+     * responsive under load and caches successful lookups per worker.
      */
     protected function validate(string $endpoint): string
     {
@@ -274,7 +283,7 @@ class Adapter
             throw new ResolverException("Invalid port number: {$port}");
         }
 
-        $ip = \gethostbyname($host);
+        $ip = Dns::resolve($host);
         if ($ip === $host && !(new IP())->isValid($ip)) {
             throw new ResolverException("Cannot resolve hostname: {$host}");
         }

@@ -24,12 +24,30 @@ use Utopia\Proxy\Resolver;
  */
 class TCP extends Adapter
 {
+    /** Linux IPPROTO_TCP (sys/socket.h) */
+    private const IPPROTO_TCP = 6;
+
+    /** Linux TCP_USER_TIMEOUT (linux/tcp.h) */
+    private const TCP_USER_TIMEOUT = 18;
+
+    /** Linux TCP_QUICKACK (linux/tcp.h) */
+    private const TCP_QUICKACK = 12;
+
+    /** Linux TCP_NOTSENT_LOWAT (linux/tcp.h) */
+    private const TCP_NOTSENT_LOWAT = 25;
+
     /** @var array<int, Client> */
     protected array $connections = [];
 
     protected float $timeout = 30.0;
 
     protected float $connectTimeout = 5.0;
+
+    protected int $tcpUserTimeoutMs = 0;
+
+    protected bool $tcpQuickAck = false;
+
+    protected int $tcpNotsentLowat = 0;
 
     public function __construct(
         public int $port {
@@ -52,6 +70,32 @@ class TCP extends Adapter
     public function setConnectTimeout(float $timeout): static
     {
         $this->connectTimeout = $timeout;
+
+        return $this;
+    }
+
+    public function setTcpUserTimeout(int $milliseconds): static
+    {
+        $this->tcpUserTimeoutMs = $milliseconds;
+
+        return $this;
+    }
+
+    public function setTcpQuickAck(bool $enabled): static
+    {
+        $this->tcpQuickAck = $enabled;
+
+        return $this;
+    }
+
+    /**
+     * Cap the kernel's unsent-bytes threshold so the reactor reports
+     * writability earlier, cutting queue depth and p99 latency under
+     * multiplexed streams. Zero disables the option.
+     */
+    public function setTcpNotsentLowat(int $bytes): static
+    {
+        $this->tcpNotsentLowat = $bytes;
 
         return $this;
     }
@@ -106,36 +150,70 @@ class TCP extends Adapter
         }
 
         $result = $this->route($data);
-
         [$host, $port] = self::parseEndpoint($result->endpoint, $this->port);
 
         $client = new Client(SWOOLE_SOCK_TCP);
-
         $client->set([
             'timeout' => $this->timeout,
             'connect_timeout' => $this->connectTimeout,
             'open_tcp_nodelay' => true,
-            'socket_buffer_size' => 2 * 1024 * 1024,
+            'socket_buffer_size' => 256 * 1024,
         ]);
 
         if (!$client->connect($host, $port, $this->connectTimeout)) {
             throw new \Exception("Failed to connect to backend: {$host}:{$port}");
         }
 
+        $this->applySocketOptions($client);
         $this->connections[$fd] = $client;
 
         return $client;
     }
 
     /**
-     * Close backend connection for a client
+     * Close backend connection for a client.
      */
     public function closeConnection(int $fd): void
     {
-        if (isset($this->connections[$fd])) {
-            $this->connections[$fd]->close();
-            unset($this->connections[$fd]);
+        $client = $this->connections[$fd] ?? null;
+        if ($client === null) {
+            return;
         }
+
+        unset($this->connections[$fd]);
+        $client->close();
     }
 
+    /**
+     * Apply TCP_USER_TIMEOUT, TCP_QUICKACK and TCP_NOTSENT_LOWAT on the
+     * backend socket. Uses raw Linux kernel constants so the code works
+     * regardless of which PHP sockets build-time defines are exposed.
+     */
+    private function applySocketOptions(Client $client): void
+    {
+        if ($this->tcpUserTimeoutMs <= 0 && !$this->tcpQuickAck && $this->tcpNotsentLowat <= 0) {
+            return;
+        }
+
+        if (\PHP_OS_FAMILY !== 'Linux') {
+            return;
+        }
+
+        $socket = $client->exportSocket();
+        if (!$socket instanceof \Swoole\Coroutine\Socket) {
+            return;
+        }
+
+        if ($this->tcpUserTimeoutMs > 0) {
+            @$socket->setOption(self::IPPROTO_TCP, self::TCP_USER_TIMEOUT, $this->tcpUserTimeoutMs);
+        }
+
+        if ($this->tcpQuickAck) {
+            @$socket->setOption(self::IPPROTO_TCP, self::TCP_QUICKACK, 1);
+        }
+
+        if ($this->tcpNotsentLowat > 0) {
+            @$socket->setOption(self::IPPROTO_TCP, self::TCP_NOTSENT_LOWAT, $this->tcpNotsentLowat);
+        }
+    }
 }

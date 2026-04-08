@@ -62,4 +62,25 @@ class TCPAdapterExtendedTest extends TestCase
         $result = $adapter->setConnectTimeout(10.0);
         $this->assertSame($adapter, $result);
     }
+
+    public function testSetTcpUserTimeoutReturnsSelf(): void
+    {
+        $adapter = new TCPAdapter(port: 5432, resolver: $this->resolver);
+        $result = $adapter->setTcpUserTimeout(10_000);
+        $this->assertSame($adapter, $result);
+    }
+
+    public function testSetTcpQuickAckReturnsSelf(): void
+    {
+        $adapter = new TCPAdapter(port: 5432, resolver: $this->resolver);
+        $result = $adapter->setTcpQuickAck(true);
+        $this->assertSame($adapter, $result);
+    }
+
+    public function testSetTcpNotsentLowatReturnsSelf(): void
+    {
+        $adapter = new TCPAdapter(port: 5432, resolver: $this->resolver);
+        $result = $adapter->setTcpNotsentLowat(16_384);
+        $this->assertSame($adapter, $result);
+    }
 }

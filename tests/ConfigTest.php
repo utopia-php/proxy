@@ -28,10 +28,10 @@ class ConfigTest extends TestCase
         $this->assertSame([5432, 3306], $config->ports);
     }
 
-    public function testDefaultWorkers(): void
+    public function testDefaultWorkersMatchesCpuCount(): void
     {
         $config = new Config(ports: [5432]);
-        $this->assertSame(16, $config->workers);
+        $this->assertSame(\swoole_cpu_num(), $config->workers);
     }
 
     public function testDefaultMaxConnections(): void
@@ -40,29 +40,29 @@ class ConfigTest extends TestCase
         $this->assertSame(200_000, $config->maxConnections);
     }
 
-    public function testDefaultMaxCoroutine(): void
+    public function testDefaultMaxCoroutineIsDoubleMaxConnections(): void
     {
         $config = new Config(ports: [5432]);
-        $this->assertSame(200_000, $config->maxCoroutine);
+        $this->assertSame(400_000, $config->maxCoroutine);
     }
 
-    public function testDefaultBufferSizes(): void
+    public function testDefaultBufferSizesAreRightSized(): void
     {
         $config = new Config(ports: [5432]);
-        $this->assertSame(16 * 1024 * 1024, $config->socketBufferSize);
-        $this->assertSame(16 * 1024 * 1024, $config->bufferOutputSize);
+        $this->assertSame(1 * 1024 * 1024, $config->socketBufferSize);
+        $this->assertSame(1 * 1024 * 1024, $config->bufferOutputSize);
     }
 
-    public function testDefaultReactorNumIsCpuBased(): void
+    public function testDefaultReactorNumMatchesCpuCount(): void
     {
         $config = new Config(ports: [5432]);
-        $this->assertSame(swoole_cpu_num() * 2, $config->reactorNum);
+        $this->assertSame(\swoole_cpu_num(), $config->reactorNum);
     }
 
-    public function testDefaultDispatchMode(): void
+    public function testDefaultServerModeIsBase(): void
     {
         $config = new Config(ports: [5432]);
-        $this->assertSame(2, $config->dispatchMode);
+        $this->assertSame(SWOOLE_BASE, $config->serverMode);
     }
 
     public function testDefaultEnableReusePort(): void
@@ -89,6 +89,42 @@ class ConfigTest extends TestCase
         $this->assertSame(30, $config->tcpKeepidle);
         $this->assertSame(10, $config->tcpKeepinterval);
         $this->assertSame(3, $config->tcpKeepcount);
+    }
+
+    public function testDefaultTcpUserTimeoutMs(): void
+    {
+        $config = new Config(ports: [5432]);
+        $this->assertSame(10_000, $config->tcpUserTimeoutMs);
+    }
+
+    public function testDefaultTcpQuickAck(): void
+    {
+        $config = new Config(ports: [5432]);
+        $this->assertTrue($config->tcpQuickAck);
+    }
+
+    public function testDefaultCoroutineStackSize(): void
+    {
+        $config = new Config(ports: [5432]);
+        $this->assertSame(262_144, $config->coroutineStackSize);
+    }
+
+    public function testDefaultGcIntervalMs(): void
+    {
+        $config = new Config(ports: [5432]);
+        $this->assertSame(5_000, $config->gcIntervalMs);
+    }
+
+    public function testDefaultDnsCacheTtl(): void
+    {
+        $config = new Config(ports: [5432]);
+        $this->assertSame(60, $config->dnsCacheTtl);
+    }
+
+    public function testDefaultTcpNotsentLowat(): void
+    {
+        $config = new Config(ports: [5432]);
+        $this->assertSame(16_384, $config->tcpNotsentLowat);
     }
 
     public function testDefaultEnableCoroutine(): void
@@ -118,7 +154,7 @@ class ConfigTest extends TestCase
     public function testDefaultReceiveBufferSize(): void
     {
         $config = new Config(ports: [5432]);
-        $this->assertSame(131072, $config->receiveBufferSize);
+        $this->assertSame(65_536, $config->receiveBufferSize);
     }
 
     public function testDefaultBackendConnectTimeout(): void
@@ -161,6 +197,18 @@ class ConfigTest extends TestCase
     {
         $config = new Config(ports: [5432], workers: 4);
         $this->assertSame(4, $config->workers);
+    }
+
+    public function testCustomMaxCoroutineOverridesDefault(): void
+    {
+        $config = new Config(ports: [5432], maxCoroutine: 1_000);
+        $this->assertSame(1_000, $config->maxCoroutine);
+    }
+
+    public function testCustomServerMode(): void
+    {
+        $config = new Config(ports: [5432], serverMode: SWOOLE_PROCESS);
+        $this->assertSame(SWOOLE_PROCESS, $config->serverMode);
     }
 
     public function testCustomBackendConnectTimeout(): void
