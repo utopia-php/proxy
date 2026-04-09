@@ -100,11 +100,15 @@ class TLSContext
 
     private function protocolMask(int $minimum): int
     {
+        // Numeric literals match Swoole's SWOOLE_SSL_TLSv1* values. Using
+        // constants here would break class load on Swoole builds compiled
+        // without OpenSSL support (they're only defined when --enable-openssl
+        // was passed at build time).
         $protocols = [
-            SWOOLE_SSL_TLSv1 => 1,
-            SWOOLE_SSL_TLSv1_1 => 2,
-            SWOOLE_SSL_TLSv1_2 => 3,
-            SWOOLE_SSL_TLSv1_3 => 4,
+            4 => 1,   // SWOOLE_SSL_TLSv1
+            2 => 2,   // SWOOLE_SSL_TLSv1_1
+            8 => 3,   // SWOOLE_SSL_TLSv1_2
+            16 => 4,  // SWOOLE_SSL_TLSv1_3
         ];
 
         $minOrder = $protocols[$minimum] ?? 3;

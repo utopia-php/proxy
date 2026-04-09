@@ -13,6 +13,9 @@ class TLSContextTest extends TestCase
         if (!\extension_loaded('swoole')) {
             $this->markTestSkipped('ext-swoole is required to run TLSContext tests.');
         }
+        if (!\defined('SWOOLE_SSL_TLSv1_2')) {
+            $this->markTestSkipped('Swoole was built without OpenSSL support.');
+        }
     }
 
     public function testToSwooleConfigBasic(): void

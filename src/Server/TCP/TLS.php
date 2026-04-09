@@ -58,9 +58,14 @@ class TLS
         . 'DHE-RSA-AES128-GCM-SHA256:DHE-RSA-AES256-GCM-SHA384';
 
     /**
-     * Minimum TLS protocol version (TLS 1.2)
+     * Minimum TLS protocol version (TLS 1.2).
+     *
+     * The numeric value matches SWOOLE_SSL_TLSv1_2 in Swoole's source and
+     * is hardcoded here so the class loads on Swoole builds compiled
+     * without OpenSSL support — the constant would otherwise be
+     * undefined at class load time, before any TLS code runs.
      */
-    public const MIN_TLS_VERSION = SWOOLE_SSL_TLSv1_2;
+    public const MIN_TLS_VERSION = 8;
 
     public function __construct(
         public readonly string $certificate,
