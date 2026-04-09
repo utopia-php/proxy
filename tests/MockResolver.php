@@ -31,7 +31,7 @@ class MockResolver implements Resolver
         return $this;
     }
 
-    public function resolve(string $resourceId): Result
+    public function resolve(string $data): Result
     {
         if ($this->exception !== null) {
             throw $this->exception;
@@ -43,7 +43,7 @@ class MockResolver implements Resolver
 
         return new Result(
             endpoint: $this->endpoint,
-            metadata: ['resourceId' => $resourceId]
+            metadata: ['data' => $data]
         );
     }
 }

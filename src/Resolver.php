@@ -8,18 +8,19 @@ use Utopia\Proxy\Resolver\Result;
 /**
  * Backend Resolver Interface
  *
- * Platform-agnostic interface for resolving resource identifiers to backend endpoints.
+ * Maps protocol-specific input to a backend endpoint. The input varies
+ * by protocol: raw TCP packet data, HTTP hostname, SMTP domain, etc.
  * Implement this interface to integrate your platform with the proxy.
  */
 interface Resolver
 {
     /**
-     * Resolve a resource identifier to a backend endpoint
+     * Resolve routing input to a backend endpoint
      *
-     * @param  string  $resourceId  Protocol-specific identifier (hostname, SNI, etc.)
+     * @param  string  $data  Protocol-specific routing input (raw packet data, hostname, domain, etc.)
      * @return Result Backend endpoint and metadata
      *
      * @throws Exception If resource not found or unavailable
      */
-    public function resolve(string $resourceId): Result;
+    public function resolve(string $data): Result;
 }

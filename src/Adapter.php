@@ -77,17 +77,17 @@ class Adapter
     /**
      * Route connection to backend
      *
-     * @param  string  $resourceId  Protocol-specific identifier
+     * @param  string  $data  Protocol-specific routing input
      * @return ConnectionResult Backend endpoint and metadata
      *
      * @throws ResolverException If routing fails
      */
-    public function route(string $resourceId): ConnectionResult
+    public function route(string $data): ConnectionResult
     {
         $now = \time();
 
         if ($this->cacheTTL > 0) {
-            $cached = $this->router->get($resourceId);
+            $cached = $this->router->get($data);
 
             if ($cached !== false && \is_array($cached)) {
                 /** @var array{endpoint: string, updated: int} $cached */
@@ -103,7 +103,7 @@ class Adapter
 
         try {
             if ($this->callback !== null) {
-                $resolved = ($this->callback)($resourceId);
+                $resolved = ($this->callback)($data);
                 if ($resolved instanceof Resolver\Result) {
                     $result = $resolved;
                 } elseif (\is_string($resolved)) {
@@ -115,7 +115,7 @@ class Adapter
                     );
                 }
             } elseif ($this->resolver !== null) {
-                $result = $this->resolver->resolve($resourceId);
+                $result = $this->resolver->resolve($data);
             } else {
                 throw new ResolverException(
                     'No resolver or resolve callback configured',
@@ -126,7 +126,7 @@ class Adapter
 
             if ($endpoint === '') {
                 throw new ResolverException(
-                    "Resolver returned empty endpoint for: {$resourceId}",
+                    "Resolver returned empty endpoint for: {$data}",
                     ResolverException::NOT_FOUND
                 );
             }
@@ -136,7 +136,7 @@ class Adapter
             }
 
             if ($this->cacheTTL > 0) {
-                $this->router->set($resourceId, [
+                $this->router->set($data, [
                     'endpoint' => $endpoint,
                     'updated' => $now,
                 ]);

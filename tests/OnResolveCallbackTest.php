@@ -29,7 +29,7 @@ class OnResolveCallbackTest extends TestCase
     {
         $adapter = new Adapter($this->resolver, protocol: Protocol::HTTP);
 
-        $result = $adapter->onResolve(function (string $resourceId) {
+        $result = $adapter->onResolve(function (string $data) {
             return '1.2.3.4:8080';
         });
 
@@ -45,7 +45,7 @@ class OnResolveCallbackTest extends TestCase
 
         $adapter = new Adapter($this->resolver, protocol: Protocol::HTTP);
         $adapter->setSkipValidation(true);
-        $adapter->onResolve(function (string $resourceId): string {
+        $adapter->onResolve(function (string $data): string {
             return 'callback-host.example.com:9090';
         });
 
@@ -77,7 +77,7 @@ class OnResolveCallbackTest extends TestCase
     {
         $adapter = new Adapter($this->resolver, protocol: Protocol::HTTP);
         $adapter->setSkipValidation(true);
-        $adapter->onResolve(function (string $resourceId): string {
+        $adapter->onResolve(function (string $data): string {
             return 'string-endpoint.example.com:5432';
         });
 
@@ -94,10 +94,10 @@ class OnResolveCallbackTest extends TestCase
     {
         $adapter = new Adapter($this->resolver, protocol: Protocol::HTTP);
         $adapter->setSkipValidation(true);
-        $adapter->onResolve(function (string $resourceId): ResolverResult {
+        $adapter->onResolve(function (string $data): ResolverResult {
             return new ResolverResult(
                 endpoint: 'result-endpoint.example.com:3306',
-                metadata: ['custom' => 'metadata', 'resourceId' => $resourceId],
+                metadata: ['custom' => 'metadata', 'input' => $data],
             );
         });
 
@@ -105,7 +105,7 @@ class OnResolveCallbackTest extends TestCase
 
         $this->assertSame('result-endpoint.example.com:3306', $result->endpoint);
         $this->assertSame('metadata', $result->metadata['custom']);
-        $this->assertSame('my-db', $result->metadata['resourceId']);
+        $this->assertSame('my-db', $result->metadata['input']);
         $this->assertFalse($result->metadata['cached']);
     }
 
@@ -118,8 +118,8 @@ class OnResolveCallbackTest extends TestCase
 
         $adapter = new Adapter($this->resolver, protocol: Protocol::HTTP);
         $adapter->setSkipValidation(true);
-        $adapter->onResolve(function (string $resourceId) use (&$receivedIds): string {
-            $receivedIds[] = $resourceId;
+        $adapter->onResolve(function (string $data) use (&$receivedIds): string {
+            $receivedIds[] = $data;
             return 'host.example.com:8080';
         });
 
@@ -164,16 +164,16 @@ class OnResolveCallbackTest extends TestCase
                 parent::setEndpoint('resolver.example.com:8080');
             }
 
-            public function resolve(string $resourceId): \Utopia\Proxy\Resolver\Result
+            public function resolve(string $data): \Utopia\Proxy\Resolver\Result
             {
                 $this->wasCalled = true;
-                return parent::resolve($resourceId);
+                return parent::resolve($data);
             }
         };
 
         $adapter = new Adapter($mockResolver, protocol: Protocol::HTTP);
         $adapter->setSkipValidation(true);
-        $adapter->onResolve(function (string $resourceId): string {
+        $adapter->onResolve(function (string $data): string {
             return 'callback.example.com:8080';
         });
 
@@ -190,7 +190,7 @@ class OnResolveCallbackTest extends TestCase
     {
         $adapter = new Adapter($this->resolver, protocol: Protocol::HTTP);
         $adapter->setSkipValidation(true);
-        $adapter->onResolve(function (string $resourceId): string {
+        $adapter->onResolve(function (string $data): string {
             return 'host.example.com:8080';
         });
 
@@ -207,7 +207,7 @@ class OnResolveCallbackTest extends TestCase
     {
         $adapter = new Adapter($this->resolver, protocol: Protocol::HTTP);
         $adapter->setSkipValidation(true);
-        $adapter->onResolve(function (string $resourceId): ResolverResult {
+        $adapter->onResolve(function (string $data): ResolverResult {
             return new ResolverResult(
                 endpoint: 'host.example.com:8080',
                 metadata: ['region' => 'us-east-1', 'tier' => 'premium'],

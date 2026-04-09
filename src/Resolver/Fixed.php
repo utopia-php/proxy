@@ -16,7 +16,7 @@ class Fixed implements Resolver
     {
     }
 
-    public function resolve(string $resourceId): Result
+    public function resolve(string $data): Result
     {
         return new Result(endpoint: $this->endpoint);
     }

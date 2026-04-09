@@ -120,7 +120,7 @@ class ResolverExtendedTest extends TestCase
         $result = $resolver->resolve('test-resource');
 
         $this->assertSame('backend.db:5432', $result->endpoint);
-        $this->assertSame('test-resource', $result->metadata['resourceId']);
+        $this->assertSame('test-resource', $result->metadata['data']);
     }
 
     public function testMockResolverThrowsWhenNoEndpoint(): void

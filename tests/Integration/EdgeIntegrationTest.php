@@ -406,31 +406,31 @@ class EdgeMockResolver implements Resolver
         return $this;
     }
 
-    public function resolve(string $resourceId): Result
+    public function resolve(string $data): Result
     {
         if ($this->unavailable) {
             throw new ResolverException(
                 'Edge service unavailable',
                 ResolverException::UNAVAILABLE,
-                ['resourceId' => $resourceId]
+                ['resourceId' => $data]
             );
         }
 
-        if (! isset($this->databases[$resourceId])) {
+        if (! isset($this->databases[$data])) {
             throw new ResolverException(
-                "Database not found: {$resourceId}",
+                "Database not found: {$data}",
                 ResolverException::NOT_FOUND,
-                ['resourceId' => $resourceId]
+                ['resourceId' => $data]
             );
         }
 
         $this->resolveCount++;
-        $config = $this->databases[$resourceId];
+        $config = $this->databases[$data];
 
         return new Result(
             endpoint: "{$config['host']}:{$config['port']}",
             metadata: [
-                'resourceId' => $resourceId,
+                'resourceId' => $data,
                 'username' => $config['username'],
             ]
         );
@@ -441,9 +441,9 @@ class EdgeMockResolver implements Resolver
         return $this->resolveCount;
     }
 
-    public function purge(string $resourceId): void
+    public function purge(string $data): void
     {
-        unset($this->databases[$resourceId]);
+        unset($this->databases[$data]);
     }
 }
 
@@ -463,16 +463,16 @@ class EdgeFailoverResolver implements Resolver
     ) {
     }
 
-    public function resolve(string $resourceId): Result
+    public function resolve(string $data): Result
     {
         $this->failedOver = false;
 
         try {
-            return $this->primary->resolve($resourceId);
+            return $this->primary->resolve($data);
         } catch (ResolverException $e) {
             $this->failedOver = true;
 
-            return $this->secondary->resolve($resourceId);
+            return $this->secondary->resolve($data);
         }
     }
 
