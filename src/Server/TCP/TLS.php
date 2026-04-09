@@ -65,7 +65,7 @@ class TLS
      * without OpenSSL support — the constant would otherwise be
      * undefined at class load time, before any TLS code runs.
      */
-    public const MIN_TLS_VERSION = 8;
+    public const MIN_TLS_VERSION = 32;
 
     public function __construct(
         public readonly string $certificate,

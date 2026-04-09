@@ -105,10 +105,10 @@ class TLSContext
         // without OpenSSL support (they're only defined when --enable-openssl
         // was passed at build time).
         $protocols = [
-            4 => 1,   // SWOOLE_SSL_TLSv1
-            2 => 2,   // SWOOLE_SSL_TLSv1_1
-            8 => 3,   // SWOOLE_SSL_TLSv1_2
-            16 => 4,  // SWOOLE_SSL_TLSv1_3
+            8 => 1,   // SWOOLE_SSL_TLSv1
+            16 => 2,  // SWOOLE_SSL_TLSv1_1
+            32 => 3,  // SWOOLE_SSL_TLSv1_2
+            64 => 4,  // SWOOLE_SSL_TLSv1_3
         ];
 
         $minOrder = $protocols[$minimum] ?? 3;
