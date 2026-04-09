@@ -121,7 +121,8 @@ composer bench:bpf        # clang -target bpf + gcc for the PoC binary
 
 This produces:
 - `benchmarks/sockmap_poc/relay.bpf.o` — the precompiled BPF program
-  loaded by `Utopia\Proxy\Sockmap\Loader` at proxy worker start.
+  (compiled from `src/Sockmap/relay.bpf.c`) loaded by
+  `Utopia\Proxy\Sockmap\Loader` at proxy worker start.
 - `benchmarks/sockmap_poc/relay_test` — a standalone correctness +
   throughput harness for the sockmap path with no PHP in the loop.
 
@@ -141,7 +142,7 @@ or construct `Config` directly:
 $config = new Utopia\Proxy\Server\TCP\Config(
     ports: [5432],
     sockmapEnabled: true,
-    sockmapBpfObject: __DIR__ . '/../benchmarks/sockmap_poc/relay.bpf.o',
+    sockmapBpfObject: __DIR__ . '/../src/Sockmap/relay.bpf.o',
 );
 ```
 

@@ -57,10 +57,9 @@ FROM alpine:3.20 AS bpf-builder
 RUN apk add --no-cache clang llvm libbpf-dev linux-headers make gcc musl-dev
 
 WORKDIR /build
-COPY benchmarks/sockmap_poc/ ./sockmap_poc/
+COPY src/Sockmap/relay.bpf.c ./
 
-RUN cd sockmap_poc && \
-    clang -O2 -g -target bpf \
+RUN clang -O2 -g -target bpf \
         -D__TARGET_ARCH_x86 \
         -I/usr/include \
         -c relay.bpf.c -o relay.bpf.o && \
@@ -118,7 +117,7 @@ COPY . .
 
 # Install the precompiled BPF object at a stable path so the proxy can
 # find it via TCP_SOCKMAP_BPF_OBJECT.
-COPY --from=bpf-builder /build/sockmap_poc/relay.bpf.o /opt/proxy/relay.bpf.o
+COPY --from=bpf-builder /build/relay.bpf.o /opt/proxy/relay.bpf.o
 
 # jemalloc as the allocator for the entire process.
 ENV LD_PRELOAD=/usr/lib/libjemalloc.so.2

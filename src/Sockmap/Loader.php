@@ -7,7 +7,7 @@ use FFI;
 /**
  * Kernel zero-copy TCP relay via BPF sockmap.
  *
- * Loads a precompiled BPF program (benchmarks/sockmap_poc/relay.bpf.o) at
+ * Loads a precompiled BPF program (relay.bpf.o, compiled from relay.bpf.c) at
  * worker start, then exposes an insertPair(clientFd, backendFd) API that
  * hands both fds off to the kernel. After insertion, every incoming TCP
  * segment on either socket is intercepted by an sk_skb/stream_verdict
