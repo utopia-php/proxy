@@ -120,8 +120,7 @@ composer bench:bpf        # clang -target bpf + gcc for the PoC binary
 ```
 
 This produces:
-- `benchmarks/sockmap_poc/relay.bpf.o` — the precompiled BPF program
-  (compiled from `src/Sockmap/relay.bpf.c`) loaded by
+- `src/Sockmap/relay.bpf.o` — the precompiled BPF program loaded by
   `Utopia\Proxy\Sockmap\Loader` at proxy worker start.
 - `benchmarks/sockmap_poc/relay_test` — a standalone correctness +
   throughput harness for the sockmap path with no PHP in the loop.

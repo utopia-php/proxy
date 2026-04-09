@@ -1,31 +1,23 @@
-# BPF sockmap relay build.
+# BPF sockmap test harness.
 #
-# The BPF source lives in src/Sockmap/relay.bpf.c (production code).
-# This Makefile builds the compiled object and the test harness.
-#
-#   make                        # build both artefacts
+#   make                        # build test binary + BPF object
 #   sudo ./relay_test           # run correctness + 1 GiB throughput test
 
-CC       := gcc
-CLANG    := clang
-CFLAGS   := -O2 -g -Wall -Wextra
-LDLIBS   := -lbpf -lpthread
+CC     := gcc
+CFLAGS := -O2 -g -Wall -Wextra
+LDLIBS := -lbpf -lpthread
 
-BPF_SRC     := ../../src/Sockmap/relay.bpf.c
-BPF_TARGET  := relay.bpf.o
-USER_TARGET := relay_test
+BPF_OBJ := ../../src/Sockmap/relay.bpf.o
 
-all: $(BPF_TARGET) $(USER_TARGET)
+all: $(BPF_OBJ) relay_test
 
-$(BPF_TARGET): $(BPF_SRC)
-	$(CLANG) -O2 -g -target bpf -D__TARGET_ARCH_x86 \
-		-I/usr/include/$$(gcc -print-multiarch) \
-		-c $< -o $@
+$(BPF_OBJ):
+	$(MAKE) -C ../../src/Sockmap relay.bpf.o
 
-$(USER_TARGET): relay_test.c
+relay_test: relay_test.c
 	$(CC) $(CFLAGS) $< -o $@ $(LDLIBS)
 
 clean:
-	rm -f $(BPF_TARGET) $(USER_TARGET)
+	rm -f relay_test
 
 .PHONY: all clean
