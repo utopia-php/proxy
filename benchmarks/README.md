@@ -157,10 +157,11 @@ logs `Sockmap: unavailable (<reason>)`.
 Sockmap delivers wins when **userspace coroutine dispatch is the bottleneck**
 — small-request, high-concurrency workloads that saturate the PHP path. On
 network-bound workloads (where the bottleneck is the NIC or the backend
-hop), sockmap is a wash because the proxy's CPU isn't what's slow.
+hop), sockmap is a wash because the proxy's CPU isn't what's slow. On real
+database workloads the backend query time dominates and sockmap makes no
+measurable difference either way.
 
-Measured on an 8-core DO syd1 droplet (proxy+backend both on loopback so
-the proxy's own CPU is the limit, not the network), `tcpbench rr -s 1024`:
+**Synthetic echo, backend on loopback** (proxy CPU is the limit), `tcpbench rr -s 1024`:
 
 | Concurrency | Sockmap    | Userspace  | Delta  |
 |-------------|-----------:|-----------:|-------:|
@@ -169,7 +170,7 @@ the proxy's own CPU is the limit, not the network), `tcpbench rr -s 1024`:
 | 1000        |     76,708 |     69,651 | +10.1% |
 | 2000        |     73,139 |     64,732 | +13.0% |
 
-Same box, backend on a separate 8-core over VPC (network is the bottleneck):
+**Synthetic echo, backend on separate 8-core over VPC** (network is the limit):
 
 | Concurrency | Sockmap    | Userspace  | Delta  |
 |-------------|-----------:|-----------:|-------:|
@@ -177,6 +178,34 @@ Same box, backend on a separate 8-core over VPC (network is the bottleneck):
 | 100         |     98,209 |     99,770 |  ±0%   |
 | 500         |    106,379 |    107,519 |  ±0%   |
 | 1000        |    104,453 |    105,010 |  ±0%   |
+
+**Real PostgreSQL backend via VPC** (pgbench SELECT, 8s, through proxy vs
+direct-to-postgres baseline). Backend CPU (query execution) dominates here:
+
+| Clients | Direct | Userspace proxy | Sockmap proxy | Sockmap vs Userspace |
+|---------|-------:|----------------:|--------------:|---------------------:|
+| 5       | 14,682 |          10,143 |         9,629 |                  -5% |
+| 10      | 20,246 |          17,830 |        17,524 |                  -2% |
+| 30      | 20,938 |          21,369 |        21,420 |                  ±0% |
+| 50      | 21,412 |          21,545 |        20,938 |                  -3% |
+| 100     | 20,666 |          21,852 |        21,099 |                  -3% |
+
+**pgbench bulk-read** (100-row SELECT per transaction):
+
+| Clients | Userspace | Sockmap | Delta |
+|---------|----------:|--------:|------:|
+| 10      |    15,624 |  15,481 |   ±0% |
+| 30      |    21,881 |  22,562 |   +3% |
+| 50      |    23,385 |  24,334 |   +4% |
+
+### Rule of thumb for deployment
+
+Turn sockmap on when profiling (perf, pidstat) shows the proxy's PHP
+workers pegged at high CPU with the backend and network both idle —
+that's the small-packet high-concurrency CPU-bound case. For real DB
+and application workloads where the backend is the slow thing, the
+userspace path is already fast enough and the extra moving parts
+(BPF toolchain, libbpf dependency, CAP_BPF) aren't worth it.
 
 ### Verifying it's actually in the data path
 
