@@ -331,10 +331,6 @@ class EdgeIntegrationTest extends TestCase
             $this->assertSame(Protocol::PostgreSQL, $results[$i]->protocol);
         }
 
-        $stats = $adapter->getStats();
-        $this->assertSame($databaseCount, $stats['cacheMisses']);
-        $this->assertSame(0, $stats['cacheHits']);
-        $this->assertSame($databaseCount, $stats['routingTableSize']);
     }
 
     /**
@@ -373,91 +369,6 @@ class EdgeIntegrationTest extends TestCase
             $this->assertSame(ResolverException::NOT_FOUND, $e->getCode());
         }
 
-        $stats = $adapter->getStats();
-        $this->assertSame(1, $stats['routingErrors']);
-        $this->assertSame(2, $stats['connections']);
-    }
-
-    /**
-     * @group integration
-     */
-    public function testConnectAndDisconnectLifecycleTracked(): void
-    {
-        $resolver = new EdgeMockResolver();
-        $resolver->registerDatabase('lifecycle1', [
-            'host' => '10.0.6.1',
-            'port' => 5432,
-            'username' => 'user',
-            'password' => 'pass',
-        ]);
-
-        $adapter = new TCPAdapter(port: 5432, resolver: $resolver);
-        $adapter->setSkipValidation(true);
-
-        // Resolve the database
-        $adapter->route('lifecycle1');
-
-        // Notify connect
-        $adapter->notifyConnect('lifecycle1', ['clientFd' => 1]);
-        $this->assertCount(1, $resolver->getConnects());
-        $this->assertSame('lifecycle1', $resolver->getConnects()[0]['resourceId']);
-
-        // Track activity
-        $adapter->setInterval(0);
-        $adapter->track('lifecycle1', ['query' => 'SELECT 1']);
-        $this->assertCount(1, $resolver->getActivities());
-
-        // Notify disconnect
-        $adapter->notifyClose('lifecycle1', ['clientFd' => 1]);
-        $this->assertCount(1, $resolver->getDisconnects());
-        $this->assertSame('lifecycle1', $resolver->getDisconnects()[0]['resourceId']);
-    }
-
-    /**
-     * @group integration
-     */
-    public function testStatsAggregateAcrossOperations(): void
-    {
-        $resolver = new EdgeMockResolver();
-        $resolver->registerDatabase('statsdb', [
-            'host' => '10.0.7.1',
-            'port' => 5432,
-            'username' => 'user',
-            'password' => 'pass',
-        ]);
-
-        $adapter = new TCPAdapter(port: 5432, resolver: $resolver);
-        $adapter->setSkipValidation(true);
-        $adapter->setCacheTTL(60);
-
-        // Align to second boundary
-        $start = time();
-        while (time() === $start) {
-            usleep(1000);
-        }
-
-        // Perform multiple operations
-        $adapter->route('statsdb');       // miss
-        $adapter->route('statsdb');       // hit
-        $adapter->route('statsdb');       // hit
-
-        $adapter->notifyConnect('statsdb');
-        $adapter->notifyClose('statsdb');
-
-        $stats = $adapter->getStats();
-
-        $this->assertSame('TCP', $stats['adapter']);
-        $this->assertSame('postgresql', $stats['protocol']);
-        $this->assertSame(3, $stats['connections']);
-        $this->assertSame(2, $stats['cacheHits']);
-        $this->assertSame(1, $stats['cacheMisses']);
-        $this->assertGreaterThan(0.0, $stats['cacheHitRate']);
-        $this->assertSame(0, $stats['routingErrors']);
-
-        /** @var array<string, mixed> $resolverStats */
-        $resolverStats = $stats['resolver'];
-        $this->assertSame(1, $resolverStats['connects']);
-        $this->assertSame(1, $resolverStats['disconnects']);
     }
 
 }
@@ -472,18 +383,6 @@ class EdgeMockResolver implements Resolver
     /** @var array<string, array{host: string, port: int, username: string, password: string}> */
     protected array $databases = [];
 
-    /** @var array<int, array{resourceId: string, metadata: array<string, mixed>}> */
-    protected array $connects = [];
-
-    /** @var array<int, array{resourceId: string, metadata: array<string, mixed>}> */
-    protected array $disconnects = [];
-
-    /** @var array<int, array{resourceId: string, metadata: array<string, mixed>}> */
-    protected array $activities = [];
-
-    /** @var array<int, string> */
-    protected array $invalidations = [];
-
     protected int $resolveCount = 0;
 
     protected bool $unavailable = false;
@@ -491,7 +390,7 @@ class EdgeMockResolver implements Resolver
     /**
      * Register a database endpoint (simulates Edge service configuration)
      *
-     * @param array{host: string, port: int, username: string, password: string} $config
+     * @param  array{host: string, port: int, username: string, password: string}  $config
      */
     public function registerDatabase(string $resourceId, array $config): self
     {
@@ -511,13 +410,13 @@ class EdgeMockResolver implements Resolver
     {
         if ($this->unavailable) {
             throw new ResolverException(
-                "Edge service unavailable",
+                'Edge service unavailable',
                 ResolverException::UNAVAILABLE,
                 ['resourceId' => $resourceId]
             );
         }
 
-        if (!isset($this->databases[$resourceId])) {
+        if (! isset($this->databases[$resourceId])) {
             throw new ResolverException(
                 "Database not found: {$resourceId}",
                 ResolverException::NOT_FOUND,
@@ -537,61 +436,14 @@ class EdgeMockResolver implements Resolver
         );
     }
 
-    public function onConnect(string $resourceId, array $metadata = []): void
-    {
-        $this->connects[] = ['resourceId' => $resourceId, 'metadata' => $metadata];
-    }
-
-    public function onDisconnect(string $resourceId, array $metadata = []): void
-    {
-        $this->disconnects[] = ['resourceId' => $resourceId, 'metadata' => $metadata];
-    }
-
-    public function track(string $resourceId, array $metadata = []): void
-    {
-        $this->activities[] = ['resourceId' => $resourceId, 'metadata' => $metadata];
-    }
-
-    public function purge(string $resourceId): void
-    {
-        $this->invalidations[] = $resourceId;
-    }
-
-    /**
-     * @return array<string, mixed>
-     */
-    public function getStats(): array
-    {
-        return [
-            'resolver' => 'edge-mock',
-            'connects' => count($this->connects),
-            'disconnects' => count($this->disconnects),
-            'activities' => count($this->activities),
-            'resolveCount' => $this->resolveCount,
-        ];
-    }
-
     public function getResolveCount(): int
     {
         return $this->resolveCount;
     }
 
-    /** @return array<int, array{resourceId: string, metadata: array<string, mixed>}> */
-    public function getConnects(): array
+    public function purge(string $resourceId): void
     {
-        return $this->connects;
-    }
-
-    /** @return array<int, array{resourceId: string, metadata: array<string, mixed>}> */
-    public function getDisconnects(): array
-    {
-        return $this->disconnects;
-    }
-
-    /** @return array<int, array{resourceId: string, metadata: array<string, mixed>}> */
-    public function getActivities(): array
-    {
-        return $this->activities;
+        unset($this->databases[$resourceId]);
     }
 }
 
@@ -604,18 +456,6 @@ class EdgeMockResolver implements Resolver
 class EdgeFailoverResolver implements Resolver
 {
     protected bool $failedOver = false;
-
-    /** @var array<int, array{resourceId: string, metadata: array<string, mixed>}> */
-    protected array $connects = [];
-
-    /** @var array<int, array{resourceId: string, metadata: array<string, mixed>}> */
-    protected array $disconnects = [];
-
-    /** @var array<int, array{resourceId: string, metadata: array<string, mixed>}> */
-    protected array $activities = [];
-
-    /** @var array<int, string> */
-    protected array $invalidations = [];
 
     public function __construct(
         protected Resolver $primary,
@@ -632,7 +472,6 @@ class EdgeFailoverResolver implements Resolver
         } catch (ResolverException $e) {
             $this->failedOver = true;
 
-            // Try secondary; let its exception propagate if it also fails
             return $this->secondary->resolve($resourceId);
         }
     }
@@ -640,40 +479,5 @@ class EdgeFailoverResolver implements Resolver
     public function didFailover(): bool
     {
         return $this->failedOver;
-    }
-
-    public function onConnect(string $resourceId, array $metadata = []): void
-    {
-        $this->connects[] = ['resourceId' => $resourceId, 'metadata' => $metadata];
-    }
-
-    public function onDisconnect(string $resourceId, array $metadata = []): void
-    {
-        $this->disconnects[] = ['resourceId' => $resourceId, 'metadata' => $metadata];
-    }
-
-    public function track(string $resourceId, array $metadata = []): void
-    {
-        $this->activities[] = ['resourceId' => $resourceId, 'metadata' => $metadata];
-    }
-
-    public function purge(string $resourceId): void
-    {
-        $this->invalidations[] = $resourceId;
-        $this->primary->purge($resourceId);
-        $this->secondary->purge($resourceId);
-    }
-
-    /**
-     * @return array<string, mixed>
-     */
-    public function getStats(): array
-    {
-        return [
-            'resolver' => 'edge-failover',
-            'failedOver' => $this->failedOver,
-            'primary' => $this->primary->getStats(),
-            'secondary' => $this->secondary->getStats(),
-        ];
     }
 }

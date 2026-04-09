@@ -14,7 +14,7 @@ class AdapterActionsTest extends TestCase
 
     protected function setUp(): void
     {
-        if (! \extension_loaded('swoole')) {
+        if (!\extension_loaded('swoole')) {
             $this->markTestSkipped('ext-swoole is required to run adapter tests.');
         }
 
@@ -42,51 +42,6 @@ class AdapterActionsTest extends TestCase
 
         $this->assertSame('127.0.0.1:8080', $result->endpoint);
         $this->assertSame(Protocol::HTTP, $result->protocol);
-    }
-
-    public function testNotifyConnectDelegatesToResolver(): void
-    {
-        $adapter = new Adapter($this->resolver, protocol: Protocol::HTTP);
-
-        $adapter->notifyConnect('resource-123', ['extra' => 'data']);
-
-        $connects = $this->resolver->getConnects();
-        $this->assertCount(1, $connects);
-        $this->assertSame('resource-123', $connects[0]['resourceId']);
-        $this->assertSame(['extra' => 'data'], $connects[0]['metadata']);
-    }
-
-    public function testNotifyCloseDelegatesToResolver(): void
-    {
-        $adapter = new Adapter($this->resolver, protocol: Protocol::HTTP);
-
-        $adapter->notifyClose('resource-123', ['extra' => 'data']);
-
-        $disconnects = $this->resolver->getDisconnects();
-        $this->assertCount(1, $disconnects);
-        $this->assertSame('resource-123', $disconnects[0]['resourceId']);
-        $this->assertSame(['extra' => 'data'], $disconnects[0]['metadata']);
-    }
-
-    public function testTrackActivityDelegatesToResolverWithThrottling(): void
-    {
-        $adapter = new Adapter($this->resolver, protocol: Protocol::HTTP);
-        $adapter->setInterval(1); // 1 second throttle
-
-        // First call should trigger activity tracking
-        $adapter->track('resource-123');
-        $this->assertCount(1, $this->resolver->getActivities());
-
-        // Immediate second call should be throttled
-        $adapter->track('resource-123');
-        $this->assertCount(1, $this->resolver->getActivities());
-
-        // Wait for throttle interval to pass
-        sleep(2);
-
-        // Third call should trigger activity tracking
-        $adapter->track('resource-123');
-        $this->assertCount(2, $this->resolver->getActivities());
     }
 
     public function testRoutingErrorThrowsException(): void
@@ -121,5 +76,13 @@ class AdapterActionsTest extends TestCase
         // Should not throw exception with validation disabled
         $result = $adapter->route('api.example.com');
         $this->assertSame('10.0.0.1:8080', $result->endpoint);
+    }
+
+    public function testSetSkipValidationReturnsSelf(): void
+    {
+        $adapter = new Adapter($this->resolver, protocol: Protocol::TCP);
+
+        $result = $adapter->setSkipValidation(true);
+        $this->assertSame($adapter, $result);
     }
 }

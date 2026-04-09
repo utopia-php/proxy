@@ -10,7 +10,6 @@ use Swoole\Http\Response;
 use Utopia\Console;
 use Utopia\Proxy\Adapter;
 use Utopia\Proxy\Server\HTTP\Config;
-use Utopia\Proxy\Server\HTTP\Telemetry;
 use Utopia\Validator\Hostname;
 
 /**
@@ -73,19 +72,11 @@ trait Handler
                 $endpoint = $result->endpoint;
             }
 
-            $telemetry = null;
-            if ($this->config->telemetry && !$this->config->fastPath) {
-                $telemetry = new Telemetry(
-                    startTime: microtime(true),
-                    result: $result,
-                );
-            }
-
             /** @var string $endpoint */
             if ($this->config->rawBackend) {
-                $this->forwardRawRequest($request, $response, $endpoint, $telemetry);
+                $this->forwardRawRequest($request, $response, $endpoint);
             } else {
-                $this->forwardRequest($request, $response, $endpoint, $telemetry);
+                $this->forwardRequest($request, $response, $endpoint);
             }
 
         } catch (\Exception $e) {
@@ -100,7 +91,7 @@ trait Handler
         }
     }
 
-    protected function forwardRequest(Request $request, Response $response, string $endpoint, ?Telemetry $telemetry = null): void
+    protected function forwardRequest(Request $request, Response $response, string $endpoint): void
     {
         [$host, $port] = Adapter::parseEndpoint($endpoint, 80);
 
@@ -201,8 +192,6 @@ trait Handler
             }
         }
 
-        $this->addTelemetryHeaders($response, $telemetry);
-
         $response->end($client->body);
 
         if ($client->connected) {
@@ -221,13 +210,13 @@ trait Handler
      * - Backend replies with Content-Length (no chunked encoding).
      * - Only GET/HEAD are supported; other methods fall back to HTTP client.
      */
-    protected function forwardRawRequest(Request $request, Response $response, string $endpoint, ?Telemetry $telemetry = null): void
+    protected function forwardRawRequest(Request $request, Response $response, string $endpoint): void
     {
         /** @var array<string, string> $requestServer */
         $requestServer = $request->server ?? [];
         $method = strtoupper($requestServer['request_method'] ?? 'GET');
         if ($method !== 'GET' && $method !== 'HEAD') {
-            $this->forwardRequest($request, $response, $endpoint, $telemetry);
+            $this->forwardRequest($request, $response, $endpoint);
 
             return;
         }
@@ -344,8 +333,6 @@ trait Handler
             $remaining -= strlen($chunkStr);
         }
 
-        $this->addTelemetryHeaders($response, $telemetry);
-
         $response->end($body);
 
         if ($client->isConnected()) {
@@ -354,24 +341,6 @@ trait Handler
             }
         } else {
             $client->close();
-        }
-    }
-
-    protected function addTelemetryHeaders(Response $response, ?Telemetry $telemetry): void
-    {
-        if ($telemetry === null) {
-            return;
-        }
-
-        $latency = round((microtime(true) - $telemetry->startTime) * 1000, 2);
-        $response->header('X-Proxy-Latency-Ms', (string) $latency);
-
-        if ($telemetry->result !== null) {
-            $response->header('X-Proxy-Protocol', $telemetry->result->protocol->value);
-
-            if (isset($telemetry->result->metadata['cached'])) {
-                $response->header('X-Proxy-Cache', $telemetry->result->metadata['cached'] ? 'HIT' : 'MISS');
-            }
         }
     }
 

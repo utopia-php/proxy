@@ -31,7 +31,6 @@ class Config
         public readonly bool $keepAlive = true,
         public readonly int $poolSize = 1024,
         public readonly float $poolTimeout = 0.001,
-        public readonly bool $telemetry = true,
         public readonly bool $fastPath = false,
         public readonly bool $fastPathAssumeOk = false,
         public readonly ?string $fixedBackend = null,

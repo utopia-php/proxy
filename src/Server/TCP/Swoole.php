@@ -42,7 +42,7 @@ use Utopia\Proxy\Sockmap\Loader as Sockmap;
  */
 class Swoole
 {
-    protected Server $server;
+    public protected(set) Server $server;
 
     /** @var array<int, TCPAdapter> */
     protected array $adapters = [];
@@ -302,14 +302,8 @@ class Swoole
         // a packet that bypassed the redirect (e.g. partial tear-down).
         if ($connection !== null && $connection->backend !== null) {
             $adapter = $this->adapters[$connection->port] ?? null;
-            if ($adapter !== null) {
-                $resourceId = (string) $fd;
-                $adapter->recordBytes($resourceId, \strlen($data), 0);
-                $adapter->track($resourceId);
-
-                if ($adapter->isSockmapActive($fd)) {
-                    return;
-                }
+            if ($adapter !== null && $adapter->isSockmapActive($fd)) {
+                return;
             }
 
             if ($connection->backend->send($data) === false) {
@@ -346,22 +340,18 @@ class Swoole
             $backend = $adapter->getConnection($data, $fd);
             $connection->backend = $backend;
 
-            $resourceId = (string) $fd;
-            $adapter->notifyConnect($resourceId);
-
             // Forward initial handshake data to backend BEFORE activating
             // sockmap — once the pair is in the map, any send() on the
             // backend fd would be redirected back to the client by the
             // sk_msg program.
             $backend->send($data);
-            $adapter->recordBytes($resourceId, \strlen($data), 0);
 
             // Activate kernel zero-copy relay. If successful the kernel
             // handles all subsequent bytes and we skip the userspace
             // forward loop entirely. Otherwise fall back to the coroutine
             // path as before.
             if (!$adapter->activateSockmap($fd)) {
-                $this->forward($server, $fd, $backend, $adapter);
+                $this->forward($server, $fd, $backend);
             }
 
         } catch (\Exception $e) {
@@ -378,7 +368,7 @@ class Swoole
      * read loop because the backend socket is not registered with the
      * server's reactor.
      */
-    protected function forward(Server $server, int $clientFd, Client $backend, TCPAdapter $adapter): void
+    protected function forward(Server $server, int $clientFd, Client $backend): void
     {
         $bufferSize = $this->config->receiveBufferSize;
         $exported = $backend->exportSocket();
@@ -388,16 +378,13 @@ class Swoole
             return;
         }
         $backendSocket = $exported;
-        $resourceId = (string) $clientFd;
-
-        \go(function () use ($server, $clientFd, $backendSocket, $bufferSize, $resourceId, $adapter): void {
+        \go(static function () use ($server, $clientFd, $backendSocket, $bufferSize): void {
             while ($server->exist($clientFd)) {
                 /** @var string|false $data */
                 $data = $backendSocket->recv($bufferSize);
                 if ($data === false || $data === '') {
                     break;
                 }
-                $adapter->recordBytes($resourceId, 0, \strlen($data));
                 if ($server->send($clientFd, $data) === false) {
                     break;
                 }
@@ -421,7 +408,6 @@ class Swoole
 
         $adapter = $this->adapters[$connection->port] ?? null;
         if ($adapter !== null) {
-            $adapter->notifyClose((string) $fd);
             $adapter->closeConnection($fd);
         }
 
@@ -433,26 +419,4 @@ class Swoole
         $this->server->start();
     }
 
-    /**
-     * @return array<string, mixed>
-     */
-    public function getStats(): array
-    {
-        $adapterStats = [];
-        foreach ($this->adapters as $port => $adapter) {
-            $adapterStats[$port] = $adapter->getStats();
-        }
-
-        /** @var array<string, mixed> $serverStats */
-        $serverStats = $this->server->stats();
-        /** @var array<string, mixed> $coroutineStats */
-        $coroutineStats = Coroutine::stats();
-
-        return [
-            'connections' => $serverStats['connection_num'] ?? 0,
-            'workers' => $serverStats['worker_num'] ?? 0,
-            'coroutines' => $coroutineStats['coroutine_num'] ?? 0,
-            'adapters' => $adapterStats,
-        ];
-    }
 }

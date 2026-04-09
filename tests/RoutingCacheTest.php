@@ -35,9 +35,6 @@ class RoutingCacheTest extends TestCase
         $result = $adapter->route('resource-1');
 
         $this->assertFalse($result->metadata['cached']);
-        $stats = $adapter->getStats();
-        $this->assertSame(1, $stats['cacheMisses']);
-        $this->assertSame(0, $stats['cacheHits']);
     }
 
     public function testSecondCallWithinOneSecondIsCacheHit(): void
@@ -77,9 +74,6 @@ class RoutingCacheTest extends TestCase
 
         $result = $adapter->route('resource-1');
         $this->assertFalse($result->metadata['cached']);
-
-        $stats = $adapter->getStats();
-        $this->assertSame(2, $stats['cacheMisses']);
     }
 
     public function testMultipleResourcesCachedIndependently(): void
@@ -97,10 +91,6 @@ class RoutingCacheTest extends TestCase
         $adapter->route('resource-1');
         $adapter->route('resource-2');
 
-        $stats = $adapter->getStats();
-        $this->assertSame(2, $stats['cacheMisses']);
-        $this->assertSame(0, $stats['cacheHits']);
-        $this->assertSame(2, $stats['routingTableSize']);
     }
 
     public function testCacheHitPreservesProtocol(): void
@@ -139,75 +129,4 @@ class RoutingCacheTest extends TestCase
         $this->assertSame('8.8.8.8:80', $cached->endpoint);
     }
 
-    public function testInitialStatsAreZero(): void
-    {
-        $adapter = new Adapter($this->resolver, protocol: Protocol::HTTP);
-
-        $stats = $adapter->getStats();
-
-        $this->assertSame(0, $stats['connections']);
-        $this->assertSame(0, $stats['cacheHits']);
-        $this->assertSame(0, $stats['cacheMisses']);
-        $this->assertSame(0, $stats['routingErrors']);
-        $this->assertSame(0, $stats['cacheHitRate']);
-        $this->assertSame(0, $stats['routingTableSize']);
-    }
-
-    public function testStatsContainAdapterInfo(): void
-    {
-        $adapter = new Adapter($this->resolver, protocol: Protocol::HTTP);
-
-        $stats = $adapter->getStats();
-
-        $this->assertSame('Adapter', $stats['adapter']);
-        $this->assertSame('http', $stats['protocol']);
-    }
-
-    public function testStatsRoutingTableMemoryIsPositive(): void
-    {
-        $adapter = new Adapter($this->resolver, protocol: Protocol::HTTP);
-
-        $stats = $adapter->getStats();
-        $this->assertGreaterThan(0, $stats['routingTableMemory']);
-    }
-
-    public function testCacheHitRateCalculation(): void
-    {
-        $this->resolver->setEndpoint('8.8.8.8:80');
-        $adapter = new Adapter($this->resolver, protocol: Protocol::HTTP);
-        $adapter->setSkipValidation(true);
-        $adapter->setCacheTTL(60);
-
-        $start = time();
-        while (time() === $start) {
-            usleep(1000);
-        }
-
-        // 1 miss, then 3 hits = 75% hit rate
-        $adapter->route('resource-1');
-        $adapter->route('resource-1');
-        $adapter->route('resource-1');
-        $adapter->route('resource-1');
-
-        $stats = $adapter->getStats();
-        $this->assertSame(75.0, $stats['cacheHitRate']);
-    }
-
-    public function testMultipleErrorsIncrementStats(): void
-    {
-        $this->resolver->setException(new \Utopia\Proxy\Resolver\Exception('fail'));
-        $adapter = new Adapter($this->resolver, protocol: Protocol::HTTP);
-
-        for ($i = 0; $i < 3; $i++) {
-            try {
-                $adapter->route('resource-1');
-            } catch (\Exception $e) {
-                // expected
-            }
-        }
-
-        $stats = $adapter->getStats();
-        $this->assertSame(3, $stats['routingErrors']);
-        $this->assertSame(3, $stats['cacheMisses']);
-    }
 }

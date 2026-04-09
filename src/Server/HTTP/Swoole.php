@@ -102,19 +102,4 @@ class Swoole
         $this->server->start();
     }
 
-    /**
-     * @return array<string, mixed>
-     */
-    public function getStats(): array
-    {
-        /** @var array<string, mixed> $stats */
-        $stats = $this->server->stats();
-
-        return [
-            'connections' => $stats['connection_num'] ?? 0,
-            'requests' => $stats['request_count'] ?? 0,
-            'workers' => $stats['worker_num'] ?? 0,
-            'adapter' => $this->adapter->getStats(),
-        ];
-    }
 }

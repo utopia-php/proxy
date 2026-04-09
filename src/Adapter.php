@@ -17,28 +17,11 @@ class Adapter
 {
     protected Table $router;
 
-    /** @var array<string, int> Connection pool stats */
-    protected array $stats = [
-        'connections' => 0,
-        'cacheHits' => 0,
-        'cacheMisses' => 0,
-        'routingErrors' => 0,
-    ];
-
     /** @var bool Skip SSRF validation for trusted backends */
     protected bool $skipValidation = false;
 
     /** @var int Routing cache TTL in seconds (0 disables caching) */
     protected int $cacheTTL = 0;
-
-    /** @var int Activity tracking interval in seconds */
-    protected int $interval = 30;
-
-    /** @var array<string, int> Last activity timestamp per resource */
-    protected array $lastActivity = [];
-
-    /** @var array<string, Bytes> */
-    protected array $bytes = [];
 
     /** @var \Closure|null Custom resolve callback, checked before the resolver */
     protected ?\Closure $callback = null;
@@ -52,16 +35,6 @@ class Adapter
         protected Protocol $protocol = Protocol::TCP,
     ) {
         $this->initRouter();
-    }
-
-    /**
-     * Set activity tracking interval
-     */
-    public function setInterval(int $seconds): static
-    {
-        $this->interval = $seconds;
-
-        return $this;
     }
 
     /**
@@ -94,75 +67,6 @@ class Adapter
     }
 
     /**
-     * Notify connect event
-     *
-     * @param  array<string, mixed>  $metadata  Additional connection metadata
-     */
-    public function notifyConnect(string $resourceId, array $metadata = []): void
-    {
-        $this->resolver?->onConnect($resourceId, $metadata);
-    }
-
-    /**
-     * Notify close event
-     *
-     * @param  array<string, mixed>  $metadata  Additional disconnection metadata
-     */
-    public function notifyClose(string $resourceId, array $metadata = []): void
-    {
-        if (isset($this->bytes[$resourceId])) {
-            $metadata['inboundBytes'] = $this->bytes[$resourceId]->inbound;
-            $metadata['outboundBytes'] = $this->bytes[$resourceId]->outbound;
-            unset($this->bytes[$resourceId]);
-        }
-
-        $this->resolver?->onDisconnect($resourceId, $metadata);
-        unset($this->lastActivity[$resourceId]);
-    }
-
-    /**
-     * Record bytes transferred for a resource
-     */
-    public function recordBytes(
-        string $resourceId,
-        int $inbound = 0,
-        int $outbound = 0,
-    ): void {
-        $entry = $this->bytes[$resourceId] ?? null;
-        if ($entry === null) {
-            $entry = new Bytes();
-            $this->bytes[$resourceId] = $entry;
-        }
-        $entry->inbound += $inbound;
-        $entry->outbound += $outbound;
-    }
-
-    /**
-     * @param  array<string, mixed>  $metadata  Activity metadata
-     */
-    public function track(string $resourceId, array $metadata = []): void
-    {
-        $now = \time();
-        $lastUpdate = $this->lastActivity[$resourceId] ?? 0;
-
-        if (($now - $lastUpdate) < $this->interval) {
-            return;
-        }
-
-        $this->lastActivity[$resourceId] = $now;
-
-        $entry = $this->bytes[$resourceId] ?? null;
-        if ($entry !== null) {
-            $metadata['inboundBytes'] = $entry->inbound;
-            $metadata['outboundBytes'] = $entry->outbound;
-            $entry->inbound = 0;
-            $entry->outbound = 0;
-        }
-
-        $this->resolver?->track($resourceId, $metadata);
-    }
-
-    /**
      * Get protocol type
      */
     public function getProtocol(): Protocol
@@ -188,9 +92,6 @@ class Adapter
             if ($cached !== false && \is_array($cached)) {
                 /** @var array{endpoint: string, updated: int} $cached */
                 if (($now - $cached['updated']) < $this->cacheTTL) {
-                    $this->stats['cacheHits']++;
-                    $this->stats['connections']++;
-
                     return new ConnectionResult(
                         endpoint: $cached['endpoint'],
                         protocol: $this->getProtocol(),
@@ -199,8 +100,6 @@ class Adapter
                 }
             }
         }
-
-        $this->stats['cacheMisses']++;
 
         try {
             if ($this->callback !== null) {
@@ -243,8 +142,6 @@ class Adapter
                 ]);
             }
 
-            $this->stats['connections']++;
-
             $metadata = $result->metadata;
             $metadata['cached'] = false;
 
@@ -254,7 +151,6 @@ class Adapter
                 metadata: $metadata,
             );
         } catch (\Exception $e) {
-            $this->stats['routingErrors']++;
             throw $e;
         }
     }
@@ -353,30 +249,5 @@ class Adapter
         $port = isset($parts[1]) && $parts[1] !== '' ? (int) $parts[1] : $defaultPort;
 
         return [$host, $port];
-    }
-
-    /**
-     * Get routing and connection stats
-     *
-     * @return array<string, mixed>
-     */
-    public function getStats(): array
-    {
-        $totalRequests = $this->stats['cacheHits'] + $this->stats['cacheMisses'];
-
-        return [
-            'adapter' => (new \ReflectionClass($this))->getShortName(),
-            'protocol' => $this->getProtocol()->value,
-            'connections' => $this->stats['connections'],
-            'cacheHits' => $this->stats['cacheHits'],
-            'cacheMisses' => $this->stats['cacheMisses'],
-            'cacheHitRate' => $totalRequests > 0
-                ? \round($this->stats['cacheHits'] / $totalRequests * 100, 2)
-                : 0,
-            'routingErrors' => $this->stats['routingErrors'],
-            'routingTableMemory' => $this->router->memorySize,
-            'routingTableSize' => $this->router->count(),
-            'resolver' => $this->resolver?->getStats() ?? [],
-        ];
     }
 }

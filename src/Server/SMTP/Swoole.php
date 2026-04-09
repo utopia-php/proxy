@@ -3,7 +3,6 @@
 namespace Utopia\Proxy\Server\SMTP;
 
 use Swoole\Constant;
-use Swoole\Coroutine;
 use Swoole\Coroutine\Client;
 use Swoole\Server;
 use Utopia\Console;
@@ -292,21 +291,4 @@ class Swoole
         $this->server->start();
     }
 
-    /**
-     * @return array<string, mixed>
-     */
-    public function getStats(): array
-    {
-        /** @var array<string, mixed> $serverStats */
-        $serverStats = $this->server->stats();
-        /** @var array<string, mixed> $coroutineStats */
-        $coroutineStats = Coroutine::stats();
-
-        return [
-            'connections' => $serverStats['connection_num'] ?? 0,
-            'workers' => $serverStats['worker_num'] ?? 0,
-            'coroutines' => $coroutineStats['coroutine_num'] ?? 0,
-            'adapter' => $this->adapter->getStats(),
-        ];
-    }
 }

@@ -202,7 +202,6 @@ class Coroutine
             }
         }
 
-        $resourceId = (string) $clientId;
         $done = new Channel(1);
 
         try {
@@ -217,16 +216,13 @@ class Coroutine
         /** @var Socket $backendSocket */
         $backendSocket = $backendClient->exportSocket();
 
-        $adapter->notifyConnect($resourceId);
-
-        \go(function () use ($clientSocket, $backendSocket, $bufferSize, $adapter, $resourceId, $done): void {
+        \go(function () use ($clientSocket, $backendSocket, $bufferSize, $done): void {
             while (true) {
                 /** @var string|false $data */
                 $data = $backendSocket->recv($bufferSize);
                 if ($data === false || $data === '') {
                     break;
                 }
-                $adapter->recordBytes($resourceId, 0, \strlen($data));
                 if ($clientSocket->sendAll($data) === false) {
                     break;
                 }
@@ -234,12 +230,10 @@ class Coroutine
             $done->push(true);
         });
 
-        $adapter->recordBytes($resourceId, \strlen($data), 0);
         if ($backendSocket->sendAll($data) === false) {
             $backendSocket->close();
             $done->pop(1.0);
             $clientSocket->close();
-            $adapter->notifyClose($resourceId);
             $adapter->closeConnection($clientId);
 
             return;
@@ -251,8 +245,6 @@ class Coroutine
             if ($data === false || $data === '') {
                 break;
             }
-            $adapter->recordBytes($resourceId, \strlen($data), 0);
-            $adapter->track($resourceId);
             if ($backendSocket->sendAll($data) === false) {
                 break;
             }
@@ -262,7 +254,6 @@ class Coroutine
         $done->pop();
         $clientSocket->close();
 
-        $adapter->notifyClose($resourceId);
         $adapter->closeConnection($clientId);
 
         if ($this->config->logConnections) {
@@ -319,24 +310,4 @@ class Coroutine
         return $on ? 'enabled' : 'disabled';
     }
 
-    /**
-     * @return array<string, mixed>
-     */
-    public function getStats(): array
-    {
-        $adapterStats = [];
-        foreach ($this->adapters as $port => $adapter) {
-            $adapterStats[$port] = $adapter->getStats();
-        }
-
-        /** @var array<string, mixed> $coroutineStats */
-        $coroutineStats = SwooleCoroutine::stats();
-
-        return [
-            'connections' => 0,
-            'workers' => 1,
-            'coroutines' => $coroutineStats['coroutine_num'] ?? 0,
-            'adapters' => $adapterStats,
-        ];
-    }
 }

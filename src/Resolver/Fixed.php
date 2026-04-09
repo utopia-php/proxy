@@ -20,25 +20,4 @@ class Fixed implements Resolver
     {
         return new Result(endpoint: $this->endpoint);
     }
-
-    public function onConnect(string $resourceId, array $metadata = []): void
-    {
-    }
-
-    public function onDisconnect(string $resourceId, array $metadata = []): void
-    {
-    }
-
-    public function track(string $resourceId, array $metadata = []): void
-    {
-    }
-
-    public function purge(string $resourceId): void
-    {
-    }
-
-    public function getStats(): array
-    {
-        return ['resolver' => 'fixed', 'endpoint' => $this->endpoint];
-    }
 }

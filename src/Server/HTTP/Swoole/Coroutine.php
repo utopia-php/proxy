@@ -116,16 +116,4 @@ class Coroutine
         });
     }
 
-    /**
-     * @return array<string, mixed>
-     */
-    public function getStats(): array
-    {
-        return [
-            'connections' => 0,
-            'requests' => 0,
-            'workers' => 1,
-            'adapter' => $this->adapter->getStats(),
-        ];
-    }
 }
