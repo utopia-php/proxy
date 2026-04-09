@@ -15,5 +15,7 @@
 # Docker volumes
 /docker-volumes/
 
-# Compiled bench binary
+# Compiled bench binaries + BPF objects
 /benchmarks/tcpbench
+/benchmarks/sockmap_poc/relay.bpf.o
+/benchmarks/sockmap_poc/relay_test

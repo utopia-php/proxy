@@ -33,6 +33,7 @@
     },
     "scripts": {
         "bench:build": "gcc -O2 -pthread -o benchmarks/tcpbench benchmarks/tcpbench.c",
+        "bench:bpf": "make -C benchmarks/sockmap_poc",
         "bench:http": "php benchmarks/http.php",
         "bench:tcp": "php benchmarks/tcp.php",
         "test": "phpunit --testsuite Unit",

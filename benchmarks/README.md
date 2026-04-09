@@ -89,6 +89,124 @@ sudo ./benchmarks/setup.sh --production # Conservative (production)
 sudo ./benchmarks/setup.sh --persist    # Survive reboots
 ```
 
+## BPF Sockmap Zero-Copy Relay
+
+For workloads where the proxy's userspace forwarding path is the bottleneck
+(small-request req/resp at high concurrency), the proxy can hand each
+`(client fd, backend fd)` pair to the Linux kernel via a BPF sockmap. Once
+the pair is inserted, every incoming TCP segment on either socket is
+redirected to its peer by an `sk_skb/stream_verdict` program, without the
+bytes ever crossing into userspace. The PHP worker only runs for the initial
+handshake and close events.
+
+### Requirements
+
+- Linux 4.17+ (`BPF_MAP_TYPE_SOCKHASH` + `sk_skb/stream_verdict` +
+  `bpf_sk_redirect_hash`). Verified on 6.8.
+- `libbpf` ≥ 1.0 on the runtime path as `libbpf.so.1`
+  (`apt install libbpf1` on Debian/Ubuntu).
+- `libc.so.6` for `getsockname`/`getpeername` via FFI (always present).
+- `ext-ffi` enabled in PHP.
+- `CAP_BPF` or run the proxy as root, OR
+  `sudo sysctl kernel.unprivileged_bpf_disabled=0` to let regular users load
+  BPF programs.
+- `clang` with BPF target for building `relay.bpf.o`
+  (`apt install clang libbpf-dev`).
+
+### Build the BPF object
+
+```bash
+composer bench:bpf        # clang -target bpf + gcc for the PoC binary
+```
+
+This produces:
+- `benchmarks/sockmap_poc/relay.bpf.o` — the precompiled BPF program
+  loaded by `Utopia\Proxy\Sockmap\Loader` at proxy worker start.
+- `benchmarks/sockmap_poc/relay_test` — a standalone correctness +
+  throughput harness for the sockmap path with no PHP in the loop.
+
+### Enable sockmap in the proxy
+
+The proxy server reads two env vars from `examples/tcp.php`:
+
+```bash
+TCP_SOCKMAP_ENABLED=1 \
+TCP_SOCKMAP_BPF_OBJECT=/path/to/relay.bpf.o \
+php examples/tcp.php
+```
+
+or construct `Config` directly:
+
+```php
+$config = new Utopia\Proxy\Server\TCP\Config(
+    ports: [5432],
+    sockmapEnabled: true,
+    sockmapBpfObject: __DIR__ . '/../benchmarks/sockmap_poc/relay.bpf.o',
+);
+```
+
+At worker start each Swoole worker loads its own copy of the BPF object and
+attaches an `sk_skb/stream_verdict` program to a per-worker sockhash. Logs
+show `Sockmap: enabled (kernel zero-copy relay)` on success; on any failure
+(missing ext-ffi, no libbpf, no CAP_BPF, missing `relay.bpf.o`, incompatible
+kernel) the worker falls through to the existing userspace relay path and
+logs `Sockmap: unavailable (<reason>)`.
+
+### When sockmap helps
+
+Sockmap delivers wins when **userspace coroutine dispatch is the bottleneck**
+— small-request, high-concurrency workloads that saturate the PHP path. On
+network-bound workloads (where the bottleneck is the NIC or the backend
+hop), sockmap is a wash because the proxy's CPU isn't what's slow.
+
+Measured on an 8-core DO syd1 droplet (proxy+backend both on loopback so
+the proxy's own CPU is the limit, not the network), `tcpbench rr -s 1024`:
+
+| Concurrency | Sockmap    | Userspace  | Delta  |
+|-------------|-----------:|-----------:|-------:|
+| 10          |     40,713 |     39,611 |  +2.8% |
+| 500         |     78,915 |     73,061 |  +8.0% |
+| 1000        |     76,708 |     69,651 | +10.1% |
+| 2000        |     73,139 |     64,732 | +13.0% |
+
+Same box, backend on a separate 8-core over VPC (network is the bottleneck):
+
+| Concurrency | Sockmap    | Userspace  | Delta  |
+|-------------|-----------:|-----------:|-------:|
+| 10          |     33,362 |     33,558 |  ±0%   |
+| 100         |     98,209 |     99,770 |  ±0%   |
+| 500         |    106,379 |    107,519 |  ±0%   |
+| 1000        |    104,453 |    105,010 |  ±0%   |
+
+### Verifying it's actually in the data path
+
+After starting a benchmark run, check the TCP stats on the proxy's backend
+connections. Real sockmap redirect shows meaningful `bytes_sent` / `bytes_received`
+per connection; a broken integration shows only the handshake (~42 bytes):
+
+```bash
+ss -t -i state established '( dport = BACKEND_PORT )' | grep bytes_sent
+```
+
+Should see `bytes_sent: 10000000`-ish per active connection during a load
+test, not `bytes_sent: 42`.
+
+### Limitations
+
+- **Plaintext TCP only.** TLS-terminated connections need userspace for the
+  crypto; the loader skips sockmap insertion on TLS sockets and the
+  userspace relay handles them.
+- **IPv4 only** in the current implementation. The tuple key in `relay.bpf.c`
+  packs `remote_ip4` / `local_port` / `remote_port` — IPv6 would need a
+  separate path using the `_ip6` fields.
+- **No resolver reinspection after activation.** Once sockmap takes over
+  the pair, the PHP code never sees subsequent bytes, so any routing logic
+  that wants to parse later packets won't run. Content-based routing on the
+  first packet still works because sockmap activation happens after the
+  initial handshake send.
+- **One sockhash per worker.** Each Swoole worker loads its own BPF object,
+  so there's no cross-worker sharing. Fine for the typical proxy topology.
+
 ## Reference Numbers (8-core, 32GB RAM)
 
 | Metric | Result |
