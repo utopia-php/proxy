@@ -70,7 +70,11 @@ class TCPServerTest extends TestCase
                 $cached = $adapter->getConnection('ignored', 1);
                 $this->assertSame($client, $cached);
 
-                // Send/recv through the connection
+                // Drain the echo from the initial 'hello' handshake
+                $echo = $client->recv(1.0);
+                $this->assertSame('hello', $echo);
+
+                // Send/recv through the established connection
                 $client->send('ping');
                 $response = $client->recv(1.0);
                 $this->assertSame('ping', $response);
