@@ -61,18 +61,16 @@ class TCPServerTest extends TestCase
                 $adapter->setTimeout(5.0);
                 $adapter->setConnectTimeout(2.0);
 
-                // getConnection dials the backend and caches by fd
-                $client = $adapter->getConnection('hello', 1);
+                // getConnection dials the backend and caches by fd.
+                // The $data arg is routing input (passed to route()),
+                // not sent to the backend — the server does that.
+                $client = $adapter->getConnection('routing-data', 1);
                 $this->assertInstanceOf(Client::class, $client);
                 $this->assertTrue($client->isConnected());
 
                 // Same fd returns cached connection
                 $cached = $adapter->getConnection('ignored', 1);
                 $this->assertSame($client, $cached);
-
-                // Drain the echo from the initial 'hello' handshake
-                $echo = $client->recv(1.0);
-                $this->assertSame('hello', $echo);
 
                 // Send/recv through the established connection
                 $client->send('ping');
