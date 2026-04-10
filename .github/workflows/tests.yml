@@ -18,11 +18,83 @@ jobs:
         uses: shivammathur/setup-php@v2
         with:
           php-version: '8.4'
-          extensions: swoole, redis, sockets
+          extensions: swoole, redis, sockets, pcov
           tools: composer:v2
 
       - name: Install dependencies
         run: composer install --prefer-dist --no-progress
 
-      - name: Run tests
-        run: composer test
+      - name: Run tests with coverage
+        run: ./vendor/bin/phpunit --testsuite Unit --coverage-clover=coverage/clover.xml --coverage-text | tee coverage/summary.txt
+
+      - name: Check coverage threshold
+        run: |
+          LINE_PCT=$(grep -oP 'Lines:\s+\K[\d.]+' coverage/summary.txt | head -1)
+          echo "Line coverage: ${LINE_PCT}%"
+          if [ "$(echo "$LINE_PCT < 80" | bc -l)" -eq 1 ]; then
+            echo "::error::Coverage ${LINE_PCT}% is below 80% minimum"
+            exit 1
+          fi
+
+      - name: Upload coverage artifact
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-baseline
+          path: coverage/clover.xml
+          retention-days: 90
+
+  coverage-diff:
+    name: Coverage Diff
+    runs-on: ubuntu-latest
+    if: github.event_name == 'pull_request'
+    needs: unit
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup PHP
+        uses: shivammathur/setup-php@v2
+        with:
+          php-version: '8.4'
+          extensions: swoole, redis, sockets, pcov
+          tools: composer:v2
+
+      - name: Install dependencies
+        run: composer install --prefer-dist --no-progress
+
+      - name: Generate PR coverage
+        run: ./vendor/bin/phpunit --testsuite Unit --coverage-clover=coverage/clover.xml --coverage-text | tee coverage/summary.txt
+
+      - name: Download baseline coverage
+        uses: dawidd6/action-download-artifact@v6
+        with:
+          name: coverage-baseline
+          path: coverage/baseline
+          branch: main
+          workflow: tests.yml
+          if_no_artifact_found: warn
+
+      - name: Compare coverage
+        run: |
+          PR_PCT=$(grep -oP 'Lines:\s+\K[\d.]+' coverage/summary.txt | head -1)
+          echo "PR coverage: ${PR_PCT}%"
+
+          if [ ! -f coverage/baseline/clover.xml ]; then
+            echo "No baseline found, skipping diff check"
+            exit 0
+          fi
+
+          BASE_STATEMENTS=$(grep -oP 'statements="\K\d+' coverage/baseline/clover.xml | paste -sd+ | bc)
+          BASE_COVERED=$(grep -oP 'coveredstatements="\K\d+' coverage/baseline/clover.xml | paste -sd+ | bc)
+          BASE_PCT=$(echo "scale=2; $BASE_COVERED * 100 / $BASE_STATEMENTS" | bc)
+
+          echo "Baseline coverage: ${BASE_PCT}%"
+          DIFF=$(echo "$PR_PCT - $BASE_PCT" | bc -l)
+          echo "Delta: ${DIFF}%"
+
+          if [ "$(echo "$DIFF < -1" | bc -l)" -eq 1 ]; then
+            echo "::error::Coverage dropped ${DIFF}% (baseline ${BASE_PCT}% → PR ${PR_PCT}%). Maximum allowed drop is 1%."
+            exit 1
+          fi
