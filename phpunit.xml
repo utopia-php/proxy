@@ -16,6 +16,7 @@
         <exclude>
             <directory>src/Server</directory>
             <directory>src/Sockmap</directory>
+            <file>src/Adapter/TCP.php</file>
         </exclude>
     </source>
 </phpunit>
