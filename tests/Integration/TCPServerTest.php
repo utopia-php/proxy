@@ -40,8 +40,11 @@ class TCPServerTest extends TestCase
 
             Coroutine::create(function () use ($backend): void {
                 $backend->handle(function (Coroutine\Server\Connection $connection): void {
-                    $data = $connection->recv();
-                    if ($data !== '' && $data !== false) {
+                    while (true) {
+                        $data = $connection->recv();
+                        if (! \is_string($data) || $data === '') {
+                            break;
+                        }
                         $connection->send($data);
                     }
                     $connection->close();
