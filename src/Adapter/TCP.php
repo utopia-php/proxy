@@ -4,6 +4,7 @@ namespace Utopia\Proxy\Adapter;
 
 use Swoole\Coroutine\Client;
 use Utopia\Proxy\Adapter;
+use Utopia\Proxy\ConnectionResult;
 use Utopia\Proxy\Protocol;
 use Utopia\Proxy\Resolver;
 use Utopia\Proxy\Sockmap\Loader as Sockmap;
@@ -40,8 +41,13 @@ class TCP extends Adapter
     /** @var array<int, Client> */
     protected array $connections = [];
 
+    /** @var array<int, string> */
+    protected array $initialData = [];
+
     /** @var array<int, int> client fd => backend fd, for sockmap pairs handed to the kernel */
     protected array $sockmapPairs = [];
+
+    protected ?\Closure $initialDataTransformer = null;
 
     protected float $timeout = 30.0;
 
@@ -64,6 +70,25 @@ class TCP extends Adapter
         ?Resolver $resolver = null,
     ) {
         parent::__construct($resolver);
+    }
+
+    /**
+     * Transform the first client packet before it is forwarded to the backend.
+     *
+     * The callback receives the raw initial packet and route result. This lets
+     * protocol-aware callers route by one identifier while forwarding a backend
+     * specific startup packet.
+     */
+    public function onInitialData(callable $callback): static
+    {
+        $this->initialDataTransformer = $callback(...);
+
+        return $this;
+    }
+
+    public function getInitialData(int $fd, string $default): string
+    {
+        return $this->initialData[$fd] ?? $default;
     }
 
     public function setTimeout(float $timeout): static
@@ -181,6 +206,7 @@ class TCP extends Adapter
 
         $result = $this->route($data);
         [$host, $port] = self::parseEndpoint($result->endpoint, $this->port);
+        $initialData = $this->transformInitialData($data, $result);
 
         $client = new Client(SWOOLE_SOCK_TCP);
         $client->set([
@@ -196,8 +222,23 @@ class TCP extends Adapter
 
         $this->applySocketOptions($client);
         $this->connections[$fd] = $client;
+        $this->initialData[$fd] = $initialData;
 
         return $client;
+    }
+
+    protected function transformInitialData(string $data, ConnectionResult $result): string
+    {
+        if ($this->initialDataTransformer === null) {
+            return $data;
+        }
+
+        $transformed = ($this->initialDataTransformer)($data, $result);
+        if (!\is_string($transformed)) {
+            throw new \Exception('Initial data transformer must return string');
+        }
+
+        return $transformed;
     }
 
     /**
@@ -270,6 +311,7 @@ class TCP extends Adapter
         }
 
         unset($this->connections[$fd]);
+        unset($this->initialData[$fd]);
         $client->close();
     }
 

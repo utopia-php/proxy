@@ -59,11 +59,15 @@ class TCPServerTest extends TestCase
                 $adapter->setSkipValidation(true);
                 $adapter->setTimeout(5.0);
                 $adapter->setConnectTimeout(2.0);
+                $adapter->onInitialData(function (string $data): string {
+                    return str_replace('routing', 'backend', $data);
+                });
 
                 // getConnection dials the backend and caches by fd
                 $client = $adapter->getConnection('routing-data', 1);
                 $this->assertInstanceOf(Client::class, $client);
                 $this->assertTrue($client->isConnected());
+                $this->assertSame('backend-data', $adapter->getInitialData(1, 'routing-data'));
 
                 // Same fd returns cached connection
                 $cached = $adapter->getConnection('ignored', 1);
@@ -71,6 +75,7 @@ class TCPServerTest extends TestCase
 
                 // closeConnection cleans up
                 $adapter->closeConnection(1);
+                $this->assertSame('fallback', $adapter->getInitialData(1, 'fallback'));
 
                 // Closing again is a no-op
                 $adapter->closeConnection(1);

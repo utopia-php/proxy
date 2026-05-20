@@ -344,7 +344,7 @@ class Swoole
             // sockmap — once the pair is in the map, any send() on the
             // backend fd would be redirected back to the client by the
             // sk_msg program.
-            $backend->send($data);
+            $backend->send($adapter->getInitialData($fd, $data));
 
             // Activate kernel zero-copy relay. If successful the kernel
             // handles all subsequent bytes and we skip the userspace
