@@ -24,9 +24,8 @@ use Utopia\Proxy\Sockmap\Loader as Sockmap;
  * doubles small-request throughput on CPU-bound forwarding workloads.
  *
  * Supports optional TLS termination for protocols that start with TLS
- * immediately after accept. Database protocols that negotiate TLS after
- * plaintext protocol bytes, such as PostgreSQL, need a protocol-aware
- * coroutine server path.
+ * immediately after accept. Protocols that negotiate before routing should
+ * use the coroutine server with a custom connection handler.
  *
  * Example:
  * ```php
@@ -282,10 +281,6 @@ class Swoole
 
     /**
      * Main receive handler
-     *
-     * When TLS is enabled, handles protocol-specific SSL negotiation:
-     * - PostgreSQL: Intercepts SSLRequest, responds 'S', Swoole upgrades to TLS
-     * - MySQL: Swoole handles SSL natively via SWOOLE_SSL socket type
      */
     public function onReceive(Server $server, int $fd, string $data, int $port): void
     {
@@ -314,16 +309,6 @@ class Swoole
             $connection->port = $port;
             $this->connections[$fd] = $connection;
         }
-
-        $sslResponse = $this->postgreSQLSSLResponse($data, $port);
-        if ($sslResponse !== null) {
-            $server->send($fd, $sslResponse);
-            $connection->pendingTls = $sslResponse === TLS::PG_SSL_RESPONSE_OK;
-
-            return;
-        }
-
-        $connection->pendingTls = false;
 
         try {
             $adapter = $this->adapters[$port] ?? null;
@@ -387,19 +372,6 @@ class Swoole
             }
             $server->close($clientFd);
         });
-    }
-
-    private function postgreSQLSSLResponse(string $data, int $port): ?string
-    {
-        if (!\in_array($port, [5432, 6432], true) || !TLS::isPostgreSQLSSLRequest($data)) {
-            return null;
-        }
-
-        if ($this->tlsContext !== null) {
-            return TLS::PG_SSL_RESPONSE_OK;
-        }
-
-        return TLS::PG_SSL_RESPONSE_REJECT;
     }
 
     /**

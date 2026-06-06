@@ -10,10 +10,9 @@ use Utopia\Validator\Text;
  * Holds certificate paths, protocol constraints, cipher configuration,
  * and mTLS (mutual TLS) settings for TLS-terminated TCP connections.
  *
- * Supports PostgreSQL STARTTLS via SSLRequest upgrade from plaintext.
- * MySQL-compatible protocols negotiate TLS after a server greeting, so
- * a generic client-first TCP router cannot terminate that handshake without
- * a protocol-aware MySQL frontend.
+ * This class only describes TLS material and policy. Protocols that negotiate
+ * TLS after plaintext bytes should implement that negotiation outside the
+ * generic proxy core.
  *
  * Example:
  * ```php
@@ -28,28 +27,6 @@ use Utopia\Validator\Text;
  */
 class TLS
 {
-    /**
-     * PostgreSQL SSLRequest message (8 bytes):
-     * - Int32(8): message length
-     * - Int32(80877103): SSL request code
-     */
-    public const PG_SSL_REQUEST = "\x00\x00\x00\x08\x04\xd2\x16\x2f";
-
-    /**
-     * PostgreSQL SSLResponse: server willing to accept SSL
-     */
-    public const PG_SSL_RESPONSE_OK = 'S';
-
-    /**
-     * PostgreSQL SSLResponse: server unwilling to accept SSL
-     */
-    public const PG_SSL_RESPONSE_REJECT = 'N';
-
-    /**
-     * MySQL capability flag: CLIENT_SSL (0x00000800)
-     */
-    public const MYSQL_CLIENT_SSL_FLAG = 0x00000800;
-
     /**
      * Default cipher suites — strong, modern, broadly compatible
      */
@@ -124,41 +101,4 @@ class TLS
         return $this->requireClientCert && $this->ca !== '';
     }
 
-    /**
-     * Detect whether a raw data packet is a PostgreSQL SSLRequest message
-     *
-     * The SSLRequest is exactly 8 bytes:
-     * - Int32(8): length
-     * - Int32(80877103): SSL request code (0x04D2162F)
-     */
-    public static function isPostgreSQLSSLRequest(string $data): bool
-    {
-        return strlen($data) === 8 && $data === self::PG_SSL_REQUEST;
-    }
-
-    /**
-     * Detect whether a raw data packet is a MySQL SSL handshake request
-     *
-     * After receiving the server greeting with SSL capability flag,
-     * the client sends an SSL request packet. This is identified by:
-     * - Packet length >= 4 bytes (header)
-     * - Capability flags in bytes 4-7 include CLIENT_SSL (0x0800)
-     * - Sequence ID = 1 (byte 3)
-     */
-    public static function isMySQLSSLRequest(string $data): bool
-    {
-        if (strlen($data) < 36) {
-            return false;
-        }
-
-        // Sequence ID should be 1 (client response to server greeting)
-        if (ord($data[3]) !== 1) {
-            return false;
-        }
-
-        // Read capability flags (little-endian uint16 at offset 4)
-        $capLow = ord($data[4]) | (ord($data[5]) << 8);
-
-        return ($capLow & self::MYSQL_CLIENT_SSL_FLAG) !== 0;
-    }
 }

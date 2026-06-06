@@ -12,7 +12,6 @@ class ConnectionStructTest extends TestCase
         $connection = new Connection();
         $this->assertNull($connection->backend);
         $this->assertSame(0, $connection->port);
-        $this->assertFalse($connection->pendingTls);
         $this->assertSame(0, $connection->inbound);
         $this->assertSame(0, $connection->outbound);
     }
@@ -21,7 +20,6 @@ class ConnectionStructTest extends TestCase
     {
         $connection = new Connection();
         $connection->port = 5432;
-        $connection->pendingTls = true;
         $connection->inbound = 100;
         $connection->outbound = 200;
 
@@ -29,7 +27,6 @@ class ConnectionStructTest extends TestCase
 
         $this->assertNull($connection->backend);
         $this->assertSame(0, $connection->port);
-        $this->assertFalse($connection->pendingTls);
         $this->assertSame(0, $connection->inbound);
         $this->assertSame(0, $connection->outbound);
     }

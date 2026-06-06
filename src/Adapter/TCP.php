@@ -205,8 +205,26 @@ class TCP extends Adapter
         }
 
         $result = $this->route($data);
-        [$host, $port] = self::parseEndpoint($result->endpoint, $this->port);
         $initialData = $this->transformInitialData($data, $result);
+
+        return $this->connect($result, $fd, $initialData);
+    }
+
+    /**
+     * Establish and cache a backend connection from an already resolved route.
+     *
+     * Protocol-aware callers can resolve after custom negotiation, then reuse
+     * the same backend dialing and socket-option path as getConnection().
+     *
+     * @throws \Exception
+     */
+    public function connect(ConnectionResult $result, int $fd, string $initialData = ''): Client
+    {
+        if (isset($this->connections[$fd])) {
+            return $this->connections[$fd];
+        }
+
+        [$host, $port] = self::parseEndpoint($result->endpoint, $this->port);
 
         $client = new Client(SWOOLE_SOCK_TCP);
         $client->set([

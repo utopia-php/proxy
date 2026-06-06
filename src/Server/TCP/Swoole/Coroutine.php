@@ -24,8 +24,8 @@ use Utopia\Proxy\Server\TCP\TLSContext;
  * on most workloads — this one is kept for users who need coroutine-level
  * control over each connection (e.g. custom protocol state machines).
  *
- * Supports optional PostgreSQL TLS termination via the wire protocol
- * SSLRequest/SSLResponse handshake.
+ * Supports optional custom per-connection handling for protocols that need
+ * application-level negotiation before the proxy can route a backend.
  *
  * Example:
  * ```php
@@ -110,9 +110,8 @@ class Coroutine
         ]);
 
         foreach ($this->config->ports as $port) {
-            // Database wire TLS is negotiated after plaintext protocol bytes.
-            // A TLS listener would expect ClientHello first and close
-            // PostgreSQL SSLRequest before PHP can respond with 'S'.
+            // Custom handlers may need plaintext protocol bytes before TLS.
+            // Keep the listener plain so callers can decide when to upgrade.
             $server = new CoroutineServer($this->config->host, $port, false, $this->config->enableReusePort);
 
             $settings = [
@@ -191,36 +190,26 @@ class Coroutine
             Console::log("Client #{$clientId} connected to port {$port}");
         }
 
+        if ($this->config->connectionHandler !== null) {
+            $handled = ($this->config->connectionHandler)(
+                $connection,
+                $port,
+                $adapter,
+                $this->config,
+                $this->tlsContext,
+            );
+
+            if ($handled === true) {
+                return;
+            }
+        }
+
         /** @var string|false $data */
         $data = $clientSocket->recv($bufferSize);
         if ($data === false || $data === '') {
             $clientSocket->close();
 
             return;
-        }
-
-        if (\in_array($port, [5432, 6432], true) && TLS::isPostgreSQLSSLRequest($data)) {
-            if ($this->tlsContext === null) {
-                if ($clientSocket->sendAll(TLS::PG_SSL_RESPONSE_REJECT) === false) {
-                    $clientSocket->close();
-
-                    return;
-                }
-            } else {
-                if ($clientSocket->sendAll(TLS::PG_SSL_RESPONSE_OK) === false || !$this->startTLS($clientSocket)) {
-                    $clientSocket->close();
-
-                    return;
-                }
-            }
-
-            /** @var string|false $data */
-            $data = $clientSocket->recv($bufferSize);
-            if ($data === false || $data === '') {
-                $clientSocket->close();
-
-                return;
-            }
         }
 
         $done = new Channel(1);
