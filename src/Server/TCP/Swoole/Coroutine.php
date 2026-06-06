@@ -24,9 +24,8 @@ use Utopia\Proxy\Server\TCP\TLSContext;
  * on most workloads — this one is kept for users who need coroutine-level
  * control over each connection (e.g. custom protocol state machines).
  *
- * Supports optional TLS termination:
- * - PostgreSQL: STARTTLS via SSLRequest/SSLResponse handshake
- * - MySQL: SSL capability flag in server greeting
+ * Supports optional PostgreSQL TLS termination via the wire protocol
+ * SSLRequest/SSLResponse handshake.
  *
  * Example:
  * ```php
@@ -49,6 +48,8 @@ class Coroutine
     protected ?TLSContext $tlsContext = null;
 
     protected ?Resolver $resolver;
+
+    protected ?int $gcTimer = null;
 
     public function __construct(
         ?Resolver $resolver = null,
@@ -106,10 +107,11 @@ class Coroutine
             'log_level' => $this->config->logLevel,
         ]);
 
-        $ssl = $this->tlsContext !== null;
-
         foreach ($this->config->ports as $port) {
-            $server = new CoroutineServer($this->config->host, $port, $ssl, $this->config->enableReusePort);
+            // Database wire TLS is negotiated after plaintext protocol bytes.
+            // A TLS listener would expect ClientHello first and close
+            // PostgreSQL SSLRequest before PHP can respond with 'S'.
+            $server = new CoroutineServer($this->config->host, $port, false, $this->config->enableReusePort);
 
             $settings = [
                 'open_tcp_nodelay' => true,
@@ -121,10 +123,6 @@ class Coroutine
                 'package_max_length' => $this->config->packageMaxLength,
                 'buffer_output_size' => $this->config->bufferOutputSize,
             ];
-
-            if ($this->tlsContext !== null) {
-                $settings = \array_merge($settings, $this->tlsContext->toSwooleConfig());
-            }
 
             $server->set($settings);
 
@@ -159,7 +157,7 @@ class Coroutine
     public function onWorkerStart(int $workerId = 0): void
     {
         \gc_disable();
-        Timer::tick($this->config->gcIntervalMs, static function (): void {
+        $this->gcTimer = Timer::tick($this->config->gcIntervalMs, static function (): void {
             \gc_collect_cycles();
         });
 
@@ -188,10 +186,19 @@ class Coroutine
             return;
         }
 
-        // PostgreSQL STARTTLS: clients send an SSLRequest before the startup
-        // message. Respond with 'S' and read the real startup packet.
-        if ($this->tlsContext !== null && $port === 5432 && TLS::isPostgreSQLSSLRequest($data)) {
-            $clientSocket->sendAll(TLS::PG_SSL_RESPONSE_OK);
+        if (\in_array($port, [5432, 6432], true) && TLS::isPostgreSQLSSLRequest($data)) {
+            if ($this->tlsContext === null) {
+                $clientSocket->sendAll(TLS::PG_SSL_RESPONSE_REJECT);
+                $clientSocket->close();
+
+                return;
+            }
+
+            if ($clientSocket->sendAll(TLS::PG_SSL_RESPONSE_OK) === false || !$this->startTLS($clientSocket)) {
+                $clientSocket->close();
+
+                return;
+            }
 
             /** @var string|false $data */
             $data = $clientSocket->recv($bufferSize);
@@ -261,6 +268,19 @@ class Coroutine
         }
     }
 
+    protected function startTLS(Socket $socket): bool
+    {
+        if ($this->tlsContext === null) {
+            return false;
+        }
+
+        if (!$socket->setProtocol($this->tlsContext->toSwooleProtocolConfig())) {
+            return false;
+        }
+
+        return $socket->sslHandshake();
+    }
+
     public function start(): void
     {
         $runner = function (): void {
@@ -281,6 +301,18 @@ class Coroutine
         }
 
         SwooleCoroutine\run($runner);
+    }
+
+    public function shutdown(): void
+    {
+        if ($this->gcTimer !== null) {
+            Timer::clear($this->gcTimer);
+            $this->gcTimer = null;
+        }
+
+        foreach ($this->servers as $server) {
+            $server->shutdown();
+        }
     }
 
     /**

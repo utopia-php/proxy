@@ -367,6 +367,18 @@ class TLSTest extends TestCase
         $this->assertTrue(TLS::isMySQLSSLRequest($data));
     }
 
+    public function testCoroutineServerUsesPlainListenerAndSocketUpgradeForPostgreSQLStartTls(): void
+    {
+        $source = \file_get_contents(__DIR__ . '/../src/Server/TCP/Swoole/Coroutine.php');
+
+        $this->assertIsString($source);
+        $this->assertStringContainsString('new CoroutineServer($this->config->host, $port, false, $this->config->enableReusePort)', $source);
+        $this->assertStringContainsString('$clientSocket->sendAll(TLS::PG_SSL_RESPONSE_OK)', $source);
+        $this->assertStringContainsString('protected function startTLS(Socket $socket): bool', $source);
+        $this->assertStringContainsString('$socket->setProtocol($this->tlsContext->toSwooleProtocolConfig())', $source);
+        $this->assertStringContainsString('$socket->sslHandshake()', $source);
+    }
+
     private function tcpServerWithoutConstructor(): TCPServer
     {
         $reflection = new ReflectionClass(TCPServer::class);
@@ -387,4 +399,5 @@ class TLSTest extends TestCase
 
         return $response;
     }
+
 }
