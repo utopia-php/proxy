@@ -82,6 +82,18 @@ class TLSContextTest extends TestCase
         $this->assertSame($customCiphers, $config['ssl_ciphers']);
     }
 
+    public function testToSwooleProtocolConfigEnablesSocketUpgrade(): void
+    {
+        $tls = new TLS(certificate: '/certs/server.crt', key: '/certs/server.key');
+        $ctx = new TLSContext($tls);
+
+        $config = $ctx->toSwooleProtocolConfig();
+
+        $this->assertTrue($config['open_ssl']);
+        $this->assertSame('/certs/server.crt', $config['ssl_cert_file']);
+        $this->assertSame('/certs/server.key', $config['ssl_key_file']);
+    }
+
     public function testToStreamContextReturnsResource(): void
     {
         $tls = new TLS(certificate: '/certs/server.crt', key: '/certs/server.key');

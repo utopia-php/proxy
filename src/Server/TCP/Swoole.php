@@ -23,14 +23,9 @@ use Utopia\Proxy\Sockmap\Loader as Sockmap;
  * PROCESS mode. This matches HAProxy's nbthread-per-core model and roughly
  * doubles small-request throughput on CPU-bound forwarding workloads.
  *
- * Supports optional TLS termination:
- * - PostgreSQL: STARTTLS via SSLRequest/SSLResponse handshake
- * - MySQL: SSL capability flag in server greeting
- *
- * When TLS is enabled, the server uses SWOOLE_SOCK_TCP | SWOOLE_SSL socket type
- * and Swoole handles the TLS handshake natively. For PostgreSQL STARTTLS, the
- * proxy intercepts the SSLRequest message, responds with 'S', and Swoole
- * upgrades the connection to TLS before forwarding the subsequent startup message.
+ * Supports optional TLS termination for protocols that start with TLS
+ * immediately after accept. Protocols that negotiate before routing should
+ * use the coroutine server with a custom connection handler.
  *
  * Example:
  * ```php
@@ -286,10 +281,6 @@ class Swoole
 
     /**
      * Main receive handler
-     *
-     * When TLS is enabled, handles protocol-specific SSL negotiation:
-     * - PostgreSQL: Intercepts SSLRequest, responds 'S', Swoole upgrades to TLS
-     * - MySQL: Swoole handles SSL natively via SWOOLE_SSL socket type
      */
     public function onReceive(Server $server, int $fd, string $data, int $port): void
     {
@@ -318,16 +309,6 @@ class Swoole
             $connection->port = $port;
             $this->connections[$fd] = $connection;
         }
-
-        // Handle PostgreSQL STARTTLS: SSLRequest comes before the real startup message.
-        if ($this->tlsContext !== null && $port === 5432 && TLS::isPostgreSQLSSLRequest($data)) {
-            $server->send($fd, TLS::PG_SSL_RESPONSE_OK);
-            $connection->pendingTls = true;
-
-            return;
-        }
-
-        $connection->pendingTls = false;
 
         try {
             $adapter = $this->adapters[$port] ?? null;
@@ -391,6 +372,26 @@ class Swoole
             }
             $server->close($clientFd);
         });
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    public function stats(): array
+    {
+        $stats = $this->server->stats();
+        if (!\is_array($stats)) {
+            return [];
+        }
+
+        $normalized = [];
+        foreach ($stats as $key => $value) {
+            if (\is_string($key)) {
+                $normalized[$key] = $value;
+            }
+        }
+
+        return $normalized;
     }
 
     public function onClose(Server $server, int $fd, int $reactorId): void

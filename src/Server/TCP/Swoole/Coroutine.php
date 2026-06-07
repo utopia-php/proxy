@@ -24,9 +24,8 @@ use Utopia\Proxy\Server\TCP\TLSContext;
  * on most workloads — this one is kept for users who need coroutine-level
  * control over each connection (e.g. custom protocol state machines).
  *
- * Supports optional TLS termination:
- * - PostgreSQL: STARTTLS via SSLRequest/SSLResponse handshake
- * - MySQL: SSL capability flag in server greeting
+ * Supports optional custom per-connection handling for protocols that need
+ * application-level negotiation before the proxy can route a backend.
  *
  * Example:
  * ```php
@@ -44,11 +43,15 @@ class Coroutine
     /** @var array<int, TCPAdapter> */
     protected array $adapters = [];
 
+    protected int $connections = 0;
+
     protected Config $config;
 
     protected ?TLSContext $tlsContext = null;
 
     protected ?Resolver $resolver;
+
+    protected ?int $gcTimer = null;
 
     public function __construct(
         ?Resolver $resolver = null,
@@ -106,10 +109,10 @@ class Coroutine
             'log_level' => $this->config->logLevel,
         ]);
 
-        $ssl = $this->tlsContext !== null;
-
         foreach ($this->config->ports as $port) {
-            $server = new CoroutineServer($this->config->host, $port, $ssl, $this->config->enableReusePort);
+            // Custom handlers may need plaintext protocol bytes before TLS.
+            // Keep the listener plain so callers can decide when to upgrade.
+            $server = new CoroutineServer($this->config->host, $port, false, $this->config->enableReusePort);
 
             $settings = [
                 'open_tcp_nodelay' => true,
@@ -121,10 +124,6 @@ class Coroutine
                 'package_max_length' => $this->config->packageMaxLength,
                 'buffer_output_size' => $this->config->bufferOutputSize,
             ];
-
-            if ($this->tlsContext !== null) {
-                $settings = \array_merge($settings, $this->tlsContext->toSwooleConfig());
-            }
 
             $server->set($settings);
 
@@ -159,7 +158,7 @@ class Coroutine
     public function onWorkerStart(int $workerId = 0): void
     {
         \gc_disable();
-        Timer::tick($this->config->gcIntervalMs, static function (): void {
+        $this->gcTimer = Timer::tick($this->config->gcIntervalMs, static function (): void {
             \gc_collect_cycles();
         });
 
@@ -169,6 +168,17 @@ class Coroutine
     }
 
     protected function handleConnection(Connection $connection, int $port): void
+    {
+        $this->connections++;
+
+        try {
+            $this->handleConnectionData($connection, $port);
+        } finally {
+            $this->connections--;
+        }
+    }
+
+    protected function handleConnectionData(Connection $connection, int $port): void
     {
         /** @var Socket $clientSocket */
         $clientSocket = $connection->exportSocket();
@@ -180,26 +190,26 @@ class Coroutine
             Console::log("Client #{$clientId} connected to port {$port}");
         }
 
+        if ($this->config->connectionHandler !== null) {
+            $handled = ($this->config->connectionHandler)(
+                $connection,
+                $port,
+                $adapter,
+                $this->config,
+                $this->tlsContext,
+            );
+
+            if ($handled === true) {
+                return;
+            }
+        }
+
         /** @var string|false $data */
         $data = $clientSocket->recv($bufferSize);
         if ($data === false || $data === '') {
             $clientSocket->close();
 
             return;
-        }
-
-        // PostgreSQL STARTTLS: clients send an SSLRequest before the startup
-        // message. Respond with 'S' and read the real startup packet.
-        if ($this->tlsContext !== null && $port === 5432 && TLS::isPostgreSQLSSLRequest($data)) {
-            $clientSocket->sendAll(TLS::PG_SSL_RESPONSE_OK);
-
-            /** @var string|false $data */
-            $data = $clientSocket->recv($bufferSize);
-            if ($data === false || $data === '') {
-                $clientSocket->close();
-
-                return;
-            }
         }
 
         $done = new Channel(1);
@@ -261,6 +271,29 @@ class Coroutine
         }
     }
 
+    /**
+     * @return array{connection_num: int}
+     */
+    public function stats(): array
+    {
+        return [
+            'connection_num' => $this->connections,
+        ];
+    }
+
+    protected function startTLS(Socket $socket): bool
+    {
+        if ($this->tlsContext === null) {
+            return false;
+        }
+
+        if (!$socket->setProtocol($this->tlsContext->toSwooleProtocolConfig())) {
+            return false;
+        }
+
+        return $socket->sslHandshake();
+    }
+
     public function start(): void
     {
         $runner = function (): void {
@@ -281,6 +314,18 @@ class Coroutine
         }
 
         SwooleCoroutine\run($runner);
+    }
+
+    public function shutdown(): void
+    {
+        if ($this->gcTimer !== null) {
+            Timer::clear($this->gcTimer);
+            $this->gcTimer = null;
+        }
+
+        foreach ($this->servers as $server) {
+            $server->shutdown();
+        }
     }
 
     /**

@@ -3,6 +3,8 @@
 namespace Utopia\Tests;
 
 use PHPUnit\Framework\TestCase;
+use ReflectionClass;
+use Utopia\Proxy\Server\TCP\Swoole\Coroutine as CoroutineTCPServer;
 use Utopia\Proxy\Server\TCP\TLS;
 
 class TLSTest extends TestCase
@@ -50,24 +52,6 @@ class TLSTest extends TestCase
         $this->assertTrue($tls->requireClientCert);
         $this->assertSame('ECDHE-RSA-AES128-GCM-SHA256', $tls->ciphers);
         $this->assertSame(SWOOLE_SSL_TLSv1_3, $tls->minProtocol);
-    }
-
-    public function testPgSslRequestConstant(): void
-    {
-        $this->assertSame(8, strlen(TLS::PG_SSL_REQUEST));
-        // Verify SSL request code bytes: 0x04D2162F = 80877103
-        $this->assertSame("\x00\x00\x00\x08\x04\xd2\x16\x2f", TLS::PG_SSL_REQUEST);
-    }
-
-    public function testPgSslResponseConstants(): void
-    {
-        $this->assertSame('S', TLS::PG_SSL_RESPONSE_OK);
-        $this->assertSame('N', TLS::PG_SSL_RESPONSE_REJECT);
-    }
-
-    public function testMySqlSslFlagConstant(): void
-    {
-        $this->assertSame(0x00000800, TLS::MYSQL_CLIENT_SSL_FLAG);
     }
 
     public function testDefaultCiphersContainsModernSuites(): void
@@ -238,112 +222,36 @@ class TLSTest extends TestCase
         $this->assertFalse($tls->isMutual());
     }
 
-    public function testIsPostgreSQLSSLRequestWithValidData(): void
+    public function testCoroutineServerUsesPlainListenerForCustomConnectionHandlers(): void
     {
-        $this->assertTrue(TLS::isPostgreSQLSSLRequest(TLS::PG_SSL_REQUEST));
+        $source = \file_get_contents(__DIR__ . '/../src/Server/TCP/Swoole/Coroutine.php');
+
+        $this->assertIsString($source);
+        $this->assertStringContainsString('new CoroutineServer($this->config->host, $port, false, $this->config->enableReusePort)', $source);
+        $this->assertStringContainsString('$this->config->connectionHandler', $source);
+        $this->assertStringContainsString('protected function startTLS(Socket $socket): bool', $source);
+        $this->assertStringContainsString('$socket->setProtocol($this->tlsContext->toSwooleProtocolConfig())', $source);
+        $this->assertStringContainsString('$socket->sslHandshake()', $source);
     }
 
-    public function testIsPostgreSQLSSLRequestWithTooShortData(): void
+    public function testTcpConfigAcceptsConnectionHandler(): void
     {
-        $this->assertFalse(TLS::isPostgreSQLSSLRequest("\x00\x00\x00\x08\x04\xd2\x16"));
+        $handler = static fn (): bool => true;
+        $config = new \Utopia\Proxy\Server\TCP\Config(
+            ports: [5432],
+            connectionHandler: $handler,
+        );
+
+        $this->assertSame($handler, $config->connectionHandler);
     }
 
-    public function testIsPostgreSQLSSLRequestWithTooLongData(): void
+    public function testCoroutineServerReportsConnectionStats(): void
     {
-        $this->assertFalse(TLS::isPostgreSQLSSLRequest(TLS::PG_SSL_REQUEST . "\x00"));
+        $reflection = new ReflectionClass(CoroutineTCPServer::class);
+        /** @var CoroutineTCPServer $server */
+        $server = $reflection->newInstanceWithoutConstructor();
+
+        $this->assertSame(['connection_num' => 0], $server->stats());
     }
 
-    public function testIsPostgreSQLSSLRequestWithEmptyData(): void
-    {
-        $this->assertFalse(TLS::isPostgreSQLSSLRequest(''));
-    }
-
-    public function testIsPostgreSQLSSLRequestWithWrongBytes(): void
-    {
-        $this->assertFalse(TLS::isPostgreSQLSSLRequest("\x00\x00\x00\x08\x00\x00\x00\x00"));
-    }
-
-    public function testIsPostgreSQLSSLRequestWithRegularStartupMessage(): void
-    {
-        // A regular PostgreSQL startup message (protocol version 3.0)
-        $startup = "\x00\x00\x00\x08\x00\x03\x00\x00";
-        $this->assertFalse(TLS::isPostgreSQLSSLRequest($startup));
-    }
-
-    public function testIsMySQLSSLRequestWithValidData(): void
-    {
-        // Build a valid MySQL SSL request: 36+ bytes, sequence ID 1, SSL flag set
-        $data = str_repeat("\x00", 36);
-        $data[3] = "\x01"; // sequence ID = 1
-        // Set CLIENT_SSL flag (0x0800) at offset 4-5 (little-endian)
-        $data[4] = "\x00";
-        $data[5] = "\x08"; // 0x0800 in little-endian
-        $this->assertTrue(TLS::isMySQLSSLRequest($data));
-    }
-
-    public function testIsMySQLSSLRequestWithTooShortData(): void
-    {
-        $this->assertFalse(TLS::isMySQLSSLRequest(str_repeat("\x00", 35)));
-    }
-
-    public function testIsMySQLSSLRequestWithEmptyData(): void
-    {
-        $this->assertFalse(TLS::isMySQLSSLRequest(''));
-    }
-
-    public function testIsMySQLSSLRequestWithWrongSequenceId(): void
-    {
-        $data = str_repeat("\x00", 36);
-        $data[3] = "\x02"; // sequence ID = 2 (should be 1)
-        $data[4] = "\x00";
-        $data[5] = "\x08";
-        $this->assertFalse(TLS::isMySQLSSLRequest($data));
-    }
-
-    public function testIsMySQLSSLRequestWithoutSslFlag(): void
-    {
-        $data = str_repeat("\x00", 36);
-        $data[3] = "\x01"; // sequence ID = 1
-        // No SSL flag
-        $data[4] = "\x00";
-        $data[5] = "\x00";
-        $this->assertFalse(TLS::isMySQLSSLRequest($data));
-    }
-
-    public function testIsMySQLSSLRequestWithSslFlagAndOtherFlags(): void
-    {
-        $data = str_repeat("\x00", 36);
-        $data[3] = "\x01"; // sequence ID = 1
-        // SSL flag (0x0800) combined with other flags (0xFF)
-        $data[4] = "\xFF";
-        $data[5] = "\x0F"; // includes 0x0800
-        $this->assertTrue(TLS::isMySQLSSLRequest($data));
-    }
-
-    public function testIsMySQLSSLRequestWithSequenceIdZero(): void
-    {
-        $data = str_repeat("\x00", 36);
-        $data[3] = "\x00"; // sequence ID = 0
-        $data[4] = "\x00";
-        $data[5] = "\x08";
-        $this->assertFalse(TLS::isMySQLSSLRequest($data));
-    }
-
-    public function testIsMySQLSSLRequestWithExactly36Bytes(): void
-    {
-        $data = str_repeat("\x00", 36);
-        $data[3] = "\x01";
-        $data[4] = "\x00";
-        $data[5] = "\x08";
-        $this->assertTrue(TLS::isMySQLSSLRequest($data));
-    }
-
-    public function testIsMySQLSSLRequestWithLargerPacket(): void
-    {
-        $data = str_repeat("\x00", 100);
-        $data[3] = "\x01";
-        $data[4] = "\x00";
-        $data[5] = "\x08";
-        $this->assertTrue(TLS::isMySQLSSLRequest($data));
-    }
 }

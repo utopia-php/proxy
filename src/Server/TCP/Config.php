@@ -48,6 +48,7 @@ class Config
         public readonly int $cacheTTL = 0,
         public readonly ?TLS $tls = null,
         public readonly ?\Closure $adapterFactory = null,
+        public readonly ?\Closure $connectionHandler = null,
     ) {
         $cpus = \swoole_cpu_num();
         $this->workers = $workers ?? $cpus;

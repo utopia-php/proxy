@@ -64,6 +64,24 @@ class TLSContext
     }
 
     /**
+     * Build protocol settings for upgrading an accepted coroutine socket.
+     *
+     * Swoole server SSL sockets expect TLS immediately on accept. Database
+     * protocols such as PostgreSQL negotiate TLS after an initial plaintext
+     * packet, so those sockets need a plaintext listener followed by
+     * Socket::setProtocol() and Socket::sslHandshake().
+     *
+     * @return array<string, mixed>
+     */
+    public function toSwooleProtocolConfig(): array
+    {
+        $config = $this->toSwooleConfig();
+        $config['open_ssl'] = true;
+
+        return $config;
+    }
+
+    /**
      * Build a PHP stream context resource for SSL connections
      *
      * Returns a context resource that can be used with stream_socket_server,
