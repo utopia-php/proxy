@@ -359,10 +359,14 @@ class Swoole
             return;
         }
         $backendSocket = $exported;
+        // Read with no timeout: the exported backend socket inherits the
+        // connect timeout as its read timeout, so a bare recv() would return
+        // false after a few idle seconds and tear down the session. Dead
+        // peers are detected via TCP keepalive and FIN/RST instead.
         \go(static function () use ($server, $clientFd, $backendSocket, $bufferSize): void {
             while ($server->exist($clientFd)) {
                 /** @var string|false $data */
-                $data = $backendSocket->recv($bufferSize);
+                $data = $backendSocket->recv($bufferSize, -1);
                 if ($data === false || $data === '') {
                     break;
                 }
