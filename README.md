@@ -1,5 +1,8 @@
 # Utopia Proxy
 
+> [!IMPORTANT]
+> This repository is archived. Utopia Proxy now lives in `packages/proxy` of Appwrite's Edge repository, its only consumer, where it is developed and loaded directly. No further releases are published here. The Rust port under `rust/` was not carried over and remains here as it was.
+
 High-performance, protocol-agnostic proxy built on Swoole for HTTP, TCP, and SMTP.
 
 ## Performance
